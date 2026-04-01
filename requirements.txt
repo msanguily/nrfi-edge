@@ -1,0 +1,8 @@
+pybaseball
+numpy
+scipy
+pandas
+supabase
+python-dotenv
+requests
+scikit-learn

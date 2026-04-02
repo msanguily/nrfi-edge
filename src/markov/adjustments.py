@@ -8,6 +8,50 @@ transition probabilities directly.
 
 from __future__ import annotations
 
+# Data-driven first-inning multipliers derived from comparing first-inning
+# outcome rates to season-long rates across 2019-2025 historical data.
+# Applied to matchup rates BEFORE the Markov chain to account for first-inning
+# specific tendencies (e.g., pitchers throw more strikes, hitters are more
+# aggressive, more HR due to fastball-heavy first-inning pitch mix).
+FIRST_INNING_MULTIPLIERS = {
+    'k': 0.99,       # Batters K 1% less in the first inning
+    'bb': 1.00,      # Walk rate unchanged
+    'hr': 1.12,      # 12% more HR (fastball-heavy pitch mix)
+    'single': 1.12,  # 12% more hits overall
+    'double': 1.12,
+    'triple': 1.12,
+    'hbp': 0.87,     # 13% fewer HBP
+}
+
+
+def adjust_for_first_inning(rates: dict) -> dict:
+    """
+    Apply first-inning-specific multipliers to matchup rates.
+
+    Multiplies each outcome rate by its empirical first-inning adjustment,
+    then recomputes out_in_play = 1 - sum(other rates).
+    If out_in_play drops below 0.01, clip it and scale down other rates.
+    """
+    result = dict(rates)
+    non_residual = [k for k in result if k != 'out_in_play']
+
+    for k in non_residual:
+        multiplier = FIRST_INNING_MULTIPLIERS.get(k, 1.0)
+        result[k] *= multiplier
+
+    other_sum = sum(result[k] for k in non_residual)
+
+    if other_sum > 0.99:
+        # Scale down to leave at least 1% for out_in_play
+        scale = 0.99 / other_sum
+        for k in non_residual:
+            result[k] *= scale
+        result['out_in_play'] = 0.01
+    else:
+        result['out_in_play'] = 1.0 - other_sum
+
+    return result
+
 
 def normalize_rates(rates: dict) -> dict:
     """

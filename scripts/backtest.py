@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate
 from src.markov.chain import compute_p_zero_runs
-from src.markov.adjustments import apply_all_adjustments
+from src.markov.adjustments import apply_all_adjustments, adjust_for_first_inning
 from src.calibration.calibrator import NRFICalibrator, compute_ece, compute_calibration_curve
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ SB_HEADERS = {
 
 OUTCOME_KEYS = ['k', 'bb', 'hbp', 'single', 'double', 'triple', 'hr']
 BF_PER_IP = 4.3
-MODEL_VERSION = '0.1.0-backtest'
+MODEL_VERSION = '0.2.0-first-inning-adj'
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -358,8 +358,11 @@ def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
         # Odds Ratio matchup
         matchup = compute_matchup_rates(batter_rates, p_rates, league_rates)
 
+        # First-inning adjustment (data-driven multipliers)
+        fi_adjusted = adjust_for_first_inning(matchup)
+
         # Environmental adjustments (park factor only for backtest)
-        adjusted = apply_all_adjustments(matchup, park_hr_factor=park_hr_factor)
+        adjusted = apply_all_adjustments(fi_adjusted, park_hr_factor=park_hr_factor)
         batter_matchup_list.append(adjusted)
 
     return batter_matchup_list

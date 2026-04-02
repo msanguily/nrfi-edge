@@ -6,6 +6,7 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - **Markov chain engine**: 24 transient states (8 baserunner configs × 3 outs) + 2 absorbing states (0 runs / ≥1 run). Computes P(0 runs) per half-inning.
 - **Odds Ratio method**: Combines batter and pitcher outcome rates using Tango's formula: `Odds(matchup) = Odds(batter) × Odds(pitcher) / Odds(league)`. Applied independently per outcome type (K, BB, HBP, 1B, 2B, 3B, HR).
 - **Marcel shrinkage**: `r = PA / (PA + 1200)`. Regresses observed rates toward league mean. Multi-year weighting: 5/4/3.
+- **First-inning adjustments**: Data-driven multipliers on matchup rates before Markov chain. HR/hits +12%, HBP -13%, K -1%, BB unchanged. Derived from 2019-2025 first-inning vs season-long rate comparison.
 - **Environmental adjustments**: Modify transition probabilities (not separate linear terms). Park HR factor, temperature, wind, umpire zone, catcher framing.
 - **Calibration**: Isotonic regression (not Platt scaling). Evaluate with ECE, Brier Score, calibration plot.
 - **Betting**: Power method vig removal. 1/6 fractional Kelly capped at 2% bankroll. Minimum 3% edge to bet. Track CLV.
@@ -20,21 +21,48 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - [x] Historical player stats — 1,770 pitcher-seasons, 3,519 batter-seasons (Step 1.4)
 - [x] Platoon splits — 10,479 rows seeded across 2019-2025 (Step 1.5)
 - [x] First-inning pitcher stats — 2,547 pitcher-season rows across 2019-2025 (Step 1.6)
+- [x] Historical lineups — 277,758 rows seeded from boxscore API (Step 1.7)
 
 ### Phase 2: Core Engine
 - [x] Odds Ratio module — code built, tests pass (Step 2.1)
 - [x] Markov chain engine — code built with productive outs + GIDP, tests pass (Step 2.2)
 - [x] Environmental adjustments — code built, tests pass (Step 2.3)
+- [x] First-inning rate adjustments — data-driven multipliers applied (Step 2.5)
 - [x] Prediction pipeline — code built, tests pass (Step 2.4)
 
-### Phase 3–4
-- [ ] Backtesting (Phase 3)
-- [ ] Live pipeline (Phase 4)
+### Phase 3: Backtesting
+- [x] Backtest v0.2.0 — 15,409 games predicted (99.9% coverage)
+- [x] First-inning adjustments reduced raw bias from +5.4% to -0.3%
+- [x] Isotonic calibrator trained on 2019-2024, tested on 2025
+
+**Backtest Results (v0.2.0-first-inning-adj):**
+
+| Metric | v0.1.0 (old) | v0.2.0 (new) | Change |
+|--------|-------------|-------------|--------|
+| Mean Prediction (actual: 0.503) | 0.5572 | 0.5000 | -0.057 (bias eliminated) |
+| Brier Score (all) | 0.2531 | 0.2505 | -0.003 (improved) |
+| Brier Skill (all) | -0.0124 | -0.0021 | +0.010 (5.9x closer to positive) |
+| ECE (all) | 0.0591 | 0.0329 | -0.026 (44% less miscalibration) |
+| Prediction std | 0.0834 | 0.0884 | +0.005 (wider spread) |
+| 2025 Calibrated Brier | 0.2487 | 0.2488 | ~same |
+| 2025 Calibrated ECE | 0.0053 | 0.0082 | ~same |
+| 2025 Calibrated Brier Skill | +0.0053 | +0.0047 | ~same |
+
+**High-Confidence (calibrated, all games):**
+- P(NRFI) > 0.54: 4,034 games → actual 56.6%
+- P(NRFI) > 0.56: 1,609 games → actual 58.7%
+- P(NRFI) > 0.58: 1,531 games → actual 58.9%
+- P(NRFI) > 0.60: 134 games → actual 63.4%
+
+### Phase 4
+- [ ] Live pipeline
 
 ## Next Steps
-1. Update park factors with current data
-2. Seed umpire data
-3. Begin Phase 3 backtesting
+1. Wire isotonic calibrator into live prediction pipeline (`predict.py:413` TODO)
+2. Seed historical weather data and apply full adjustments in backtest
+3. Apply Marcel shrinkage to platoon split rates (currently unshrunk)
+4. Seed umpire data for umpire zone adjustments
+5. Investigate further discrimination improvements
 
 ## Key Files
 - `docs/STRATEGY.md` — Full mathematical framework, formulas, corrections, and detailed reasoning. READ THIS before building any core engine component.

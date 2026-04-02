@@ -9,6 +9,8 @@ import streamlit as st
 from .calculations import (
     format_odds, format_prob, format_pl, format_edge, format_clv,
     american_to_implied, calculate_profit, current_streak,
+    classify_tier, TIER_COLORS, TIER_LABELS, TIER_ORDER,
+    TIER_STRONG, TIER_VALUE, TIER_LEAN,
 )
 
 
@@ -77,7 +79,8 @@ def _hr_factor_label(hr_factor):
 # Bet card
 # ---------------------------------------------------------------------------
 
-def render_bet_card(pred: dict, odds_by_game: dict = None, pitcher_rates: dict = None):
+def render_bet_card(pred: dict, odds_by_game: dict = None, pitcher_rates: dict = None,
+                    tier: str = None):
     """Render a single recommended bet card."""
     odds_list = (odds_by_game or {}).get(pred["game_pk"], [])
     matchup = f"{pred['away_team']} @ {pred['home_team']}"
@@ -85,6 +88,15 @@ def render_bet_card(pred: dict, odds_by_game: dict = None, pitcher_rates: dict =
 
     with st.container(border=True):
         st.markdown(f"### {matchup}")
+        if tier:
+            color = TIER_COLORS.get(tier, "#888")
+            label = TIER_LABELS.get(tier, tier)
+            st.markdown(
+                f'<span style="background:{color};color:#000;padding:2px 10px;'
+                f'border-radius:12px;font-size:0.8em;font-weight:600">'
+                f'{label}</span>',
+                unsafe_allow_html=True,
+            )
         if game_time_str:
             st.caption(game_time_str)
 
@@ -190,6 +202,9 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
         p_top = float(pred["p_nrfi_top"]) if pred.get("p_nrfi_top") is not None else None
         p_bot = float(pred["p_nrfi_bottom"]) if pred.get("p_nrfi_bottom") is not None else None
 
+        edge_val = float(pred["edge"]) if pred.get("edge") is not None else None
+        tier = classify_tier(edge_val, pred.get("p_nrfi_calibrated"), pred.get("p_nrfi_combined"))
+
         status = _status_label(pred.get("status"))
         result = _result_icon(pred.get("result"))
 
@@ -199,6 +214,7 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
             "Away Pitcher": away_p,
             "Home Pitcher": home_p,
             "NRFI Chance": format_prob(display_prob),
+            "Tier": TIER_LABELS.get(tier, "\u2014") if has_odds else None,
             "Away Scoreless": format_prob(p_top),
             "Home Scoreless": format_prob(p_bot),
         }
@@ -241,6 +257,8 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
 
     import pandas as pd
     df = pd.DataFrame(rows)
+    if "Tier" in df.columns and df["Tier"].isna().all():
+        df = df.drop(columns=["Tier"])
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     # Expandable details per game
@@ -868,3 +886,93 @@ def render_high_confidence_table(predictions: list):
         st.markdown("### When We're Most Confident")
         st.caption("Higher confidence thresholds find fewer games but should have higher win rates")
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def render_tier_performance(bets: list):
+    """Show performance metrics and chart broken down by confidence tier."""
+    if not bets:
+        return
+
+    # Classify each bet and bucket stats
+    tier_stats = {}
+    for tier_name in (TIER_STRONG, TIER_VALUE, TIER_LEAN):
+        tier_stats[tier_name] = {"wins": 0, "losses": 0, "pl": 0.0, "wagered": 0.0,
+                                 "edges": [], "decided": 0}
+
+    for b in bets:
+        edge = float(b["edge"]) if b.get("edge") is not None else None
+        prob = _safe_prob(b.get("p_nrfi_calibrated"), b.get("p_nrfi_combined"))
+        tier = classify_tier(edge, prob)
+        if tier is None or tier not in tier_stats:
+            continue
+        ts = tier_stats[tier]
+        if edge is not None:
+            ts["edges"].append(edge)
+        if b.get("result") is not None and b.get("best_nrfi_price"):
+            units = float(b["bet_size_units"]) if b.get("bet_size_units") else 1.0
+            ts["decided"] += 1
+            if b["result"]:
+                ts["wins"] += 1
+                ts["pl"] += calculate_profit(int(b["best_nrfi_price"]), units, True)
+            else:
+                ts["losses"] += 1
+                ts["pl"] += calculate_profit(int(b["best_nrfi_price"]), units, False)
+            ts["wagered"] += units
+
+    # Only render if at least one tier has decided bets
+    if not any(ts["decided"] > 0 for ts in tier_stats.values()):
+        return
+
+    st.markdown("### Performance by Confidence Tier")
+    st.caption("How each pick tier has performed")
+
+    cols = st.columns(3)
+    for i, tier_name in enumerate((TIER_STRONG, TIER_VALUE, TIER_LEAN)):
+        ts = tier_stats[tier_name]
+        color = TIER_COLORS[tier_name]
+        label = TIER_LABELS[tier_name]
+        with cols[i]:
+            st.markdown(
+                f'<p style="color:{color};font-weight:700;font-size:1.1em;margin-bottom:0">'
+                f'{label}</p>',
+                unsafe_allow_html=True,
+            )
+            decided = ts["decided"]
+            if decided > 0:
+                wr = ts["wins"] / decided * 100
+                roi = (ts["pl"] / ts["wagered"] * 100) if ts["wagered"] > 0 else 0
+                avg_edge = (sum(ts["edges"]) / len(ts["edges"]) * 100) if ts["edges"] else 0
+                st.metric("Record", f"{ts['wins']}W-{ts['losses']}L")
+                st.metric("Profit/Loss", format_pl(ts["pl"]))
+                st.metric("ROI", f"{roi:.1f}%")
+                st.metric("Avg Edge", f"{avg_edge:.1f}%")
+            else:
+                st.caption("No decided bets yet")
+
+    # Grouped bar chart: win rate and ROI by tier
+    tiers_with_data = [t for t in (TIER_STRONG, TIER_VALUE, TIER_LEAN)
+                       if tier_stats[t]["decided"] > 0]
+    if len(tiers_with_data) >= 2:
+        labels = [TIER_LABELS[t] for t in tiers_with_data]
+        win_rates = [tier_stats[t]["wins"] / tier_stats[t]["decided"] * 100
+                     for t in tiers_with_data]
+        rois = [(tier_stats[t]["pl"] / tier_stats[t]["wagered"] * 100)
+                if tier_stats[t]["wagered"] > 0 else 0
+                for t in tiers_with_data]
+        colors = [TIER_COLORS[t] for t in tiers_with_data]
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            name="Win Rate %", x=labels, y=win_rates,
+            marker_color=colors, opacity=0.85,
+        ))
+        fig.add_trace(go.Bar(
+            name="ROI %", x=labels, y=rois,
+            marker_color=colors, opacity=0.5,
+            marker_line=dict(width=2, color=colors),
+        ))
+        fig.update_layout(
+            barmode="group", template="plotly_dark", height=320,
+            yaxis_title="%", legend=dict(orientation="h", y=1.12),
+        )
+        st.plotly_chart(fig, use_container_width=True)

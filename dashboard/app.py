@@ -21,6 +21,7 @@ from dashboard.queries import (
 from dashboard.calculations import (
     format_prob, format_pl, format_edge, format_clv, format_odds,
     current_streak, calculate_roi, calculate_profit,
+    classify_tier, TIER_STRONG, TIER_VALUE, TIER_LEAN, TIER_LABELS,
 )
 from dashboard.components import (
     render_bet_card, render_games_table, render_cumulative_pl_chart,
@@ -29,6 +30,7 @@ from dashboard.components import (
     render_bookmaker_table, render_backtest_accuracy,
     render_backtest_season_chart, render_prediction_distribution,
     render_high_confidence_table, render_rolling_accuracy,
+    render_tier_performance,
 )
 
 # ---------------------------------------------------------------------------
@@ -235,19 +237,41 @@ if page == "Today's Picks":
         game_pks = [p["game_pk"] for p in display_preds]
         weather_by_game = get_weather_batch(game_pks)
 
-        # ---- Recommended Bets (value > 3%) ----
-        recommended = [p for p in display_preds
-                       if p.get("edge") is not None and float(p["edge"]) >= 0.03]
-        recommended.sort(key=lambda x: float(x["edge"]), reverse=True)
+        # ---- Classify picks into confidence tiers ----
+        from dashboard.components import _safe_prob
+        for p in display_preds:
+            prob = _safe_prob(p.get("p_nrfi_calibrated"), p.get("p_nrfi_combined"))
+            edge = float(p["edge"]) if p.get("edge") is not None else None
+            p["_tier"] = classify_tier(edge, prob)
+
+        strong = [p for p in display_preds if p["_tier"] == TIER_STRONG]
+        value = [p for p in display_preds if p["_tier"] == TIER_VALUE]
+        lean = [p for p in display_preds if p["_tier"] == TIER_LEAN]
+
+        for group in (strong, value, lean):
+            group.sort(key=lambda x: float(x.get("edge") or 0), reverse=True)
+
+        recommended = strong + value + lean
 
         if recommended:
-            st.markdown(f"## Best Bets \u2014 {display_date.strftime('%B %-d, %Y')}")
-            st.caption("Games where our model finds 3%+ value vs sportsbook odds")
-            n_cols = min(len(recommended), 4)
+            st.markdown(f"## Today's Picks \u2014 {display_date.strftime('%B %-d, %Y')}")
+            parts = []
+            if strong:
+                parts.append(f"**{len(strong)} Strong**")
+            if value:
+                parts.append(f"**{len(value)} Value**")
+            if lean:
+                parts.append(f"**{len(lean)} Lean**")
+            st.caption(" \u00b7 ".join(parts) if parts else "No picks meet minimum threshold")
+
+            top_picks = (strong + value)[:4]
+            if not top_picks:
+                top_picks = lean[:4]
+            n_cols = min(len(top_picks), 4)
             cols = st.columns(n_cols)
-            for i, pred in enumerate(recommended[:4]):
+            for i, pred in enumerate(top_picks):
                 with cols[i]:
-                    render_bet_card(pred, odds_by_game, pitcher_rates)
+                    render_bet_card(pred, odds_by_game, pitcher_rates, tier=pred["_tier"])
         else:
             st.markdown(f"## Today's Games \u2014 {display_date.strftime('%B %-d, %Y')}")
             if display_preds:
@@ -300,6 +324,8 @@ elif page == "Performance":
             render_clv_histogram(bets)
         with col4:
             render_edge_histogram(bets)
+
+        render_tier_performance(bets)
 
         render_bookmaker_table(get_bookmaker_performance())
 
@@ -524,7 +550,7 @@ elif page == "Bet History":
     st.caption("Every prediction the model has made, with results")
 
     # Filters
-    fcol1, fcol2, fcol3, fcol4, fcol5 = st.columns(5)
+    fcol1, fcol2, fcol3, fcol4, fcol5, fcol6 = st.columns(6)
     with fcol1:
         start_date = st.date_input("Start Date", value=date(2019, 1, 1))
     with fcol2:
@@ -537,6 +563,10 @@ elif page == "Bet History":
     with fcol5:
         season = st.selectbox("Season", [None, 2025, 2024, 2023, 2022, 2021, 2020, 2019],
                                format_func=lambda x: "All" if x is None else str(x))
+    with fcol6:
+        tier_filter = st.selectbox("Confidence Tier",
+                                    ["All", TIER_STRONG, TIER_VALUE, TIER_LEAN],
+                                    help="Filter by pick confidence tier")
 
     min_edge = min_edge_pct / 100 if min_edge_pct > 0 else None
 
@@ -553,6 +583,16 @@ elif page == "Bet History":
         )
 
     history = load_history(start_date, end_date, min_edge, result_filter)
+
+    # Compute tier for each row and apply tier filter
+    if history:
+        from dashboard.components import _safe_prob
+        for h in history:
+            edge = float(h["edge"]) if h.get("edge") is not None else None
+            prob = _safe_prob(h.get("p_nrfi_calibrated"), h.get("p_nrfi_combined"))
+            h["_tier"] = classify_tier(edge, prob)
+        if tier_filter != "All":
+            history = [h for h in history if h.get("_tier") == tier_filter]
 
     if not history and min_edge_pct > 0:
         st.info("No games found with that advantage filter. "
@@ -607,11 +647,28 @@ elif page == "Bet History":
                            delta=f"{(avg_pred - win_rate/100):+.1%} vs actual",
                            delta_color="off")
 
+        # Tier breakdown (only when odds data exists)
+        has_odds_data = any(h.get("best_book") for h in history)
+        if has_betting_data:
+            tier_parts = []
+            for t_name in (TIER_STRONG, TIER_VALUE, TIER_LEAN):
+                t_bets = [h for h in history if h.get("_tier") == t_name]
+                if not t_bets:
+                    continue
+                t_w = sum(1 for h in t_bets if h.get("result") is True)
+                t_l = sum(1 for h in t_bets if h.get("result") is False)
+                t_pl = 0.0
+                for h in t_bets:
+                    if h.get("result") is not None and h.get("best_nrfi_price"):
+                        u = float(h["bet_size_units"]) if h.get("bet_size_units") else 1.0
+                        t_pl += calculate_profit(int(h["best_nrfi_price"]), u, h["result"])
+                tier_parts.append(f"**{TIER_LABELS[t_name]}**: {t_w}W-{t_l}L ({format_pl(t_pl)})")
+            if tier_parts:
+                st.caption(" | ".join(tier_parts))
+
         st.divider()
 
         import pandas as pd
-        # Detect if any row has live betting data (odds, edge, etc.)
-        has_odds_data = any(h.get("best_book") for h in history)
 
         rows = []
         for h in history:
@@ -628,6 +685,7 @@ elif page == "Bet History":
 
             # Only include betting columns when we have actual odds data
             if has_odds_data:
+                row["Tier"] = TIER_LABELS.get(h.get("_tier"), "\u2014")
                 pl = None
                 if h.get("result") is not None and h.get("best_nrfi_price"):
                     units = float(h["bet_size_units"]) if h.get("bet_size_units") else 1.0

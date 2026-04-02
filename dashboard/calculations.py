@@ -117,3 +117,47 @@ def current_streak(results: list) -> str:
             break
     prefix = "W" if current else "L"
     return f"{prefix}{count}"
+
+
+# ---------------------------------------------------------------------------
+# Confidence tier classification
+# ---------------------------------------------------------------------------
+
+TIER_STRONG = "Strong"
+TIER_VALUE = "Value"
+TIER_LEAN = "Lean"
+
+# Thresholds
+STRONG_EDGE = 0.05   # 5% edge
+STRONG_PROB = 0.54   # 54% calibrated probability
+BET_EDGE = 0.03      # 3% minimum edge for any bet recommendation
+
+TIER_COLORS = {TIER_STRONG: "#FFD700", TIER_VALUE: "#00cc66", TIER_LEAN: "#4488ff"}
+TIER_LABELS = {TIER_STRONG: "Strong Pick", TIER_VALUE: "Value Play", TIER_LEAN: "Lean"}
+TIER_ORDER = {TIER_STRONG: 0, TIER_VALUE: 1, TIER_LEAN: 2, None: 3}
+
+
+def classify_tier(edge, prob_calibrated, prob_raw=None):
+    """
+    Classify a prediction into a confidence tier.
+
+    Strong: edge >= 5% AND calibrated prob >= 54%
+    Value:  edge >= 5% OR calibrated prob >= 54% (but not both)
+    Lean:   edge >= 3% but neither signal elevated
+    None:   below minimum edge or no odds data
+    """
+    if edge is None:
+        return None
+    edge = float(edge)
+    if edge < BET_EDGE:
+        return None
+    prob = float(prob_calibrated) if prob_calibrated is not None else (
+        float(prob_raw) if prob_raw is not None else None
+    )
+    high_edge = edge >= STRONG_EDGE
+    high_prob = prob is not None and prob >= STRONG_PROB
+    if high_edge and high_prob:
+        return TIER_STRONG
+    if high_edge or high_prob:
+        return TIER_VALUE
+    return TIER_LEAN

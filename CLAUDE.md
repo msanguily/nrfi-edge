@@ -6,8 +6,9 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - **Markov chain engine**: 24 transient states (8 baserunner configs × 3 outs) + 2 absorbing states (0 runs / ≥1 run). Computes P(0 runs) per half-inning.
 - **Odds Ratio method**: Combines batter and pitcher outcome rates using Tango's formula: `Odds(matchup) = Odds(batter) × Odds(pitcher) / Odds(league)`. Applied independently per outcome type (K, BB, HBP, 1B, 2B, 3B, HR).
 - **Marcel shrinkage**: `r = PA / (PA + 1200)`. Regresses observed rates toward league mean. Multi-year weighting: 5/4/3.
-- **First-inning adjustments**: Data-driven multipliers on matchup rates before Markov chain. HR/hits +12%, HBP -13%, K -1%, BB unchanged. Derived from 2019-2025 first-inning vs season-long rate comparison.
-- **Environmental adjustments**: Modify transition probabilities (not separate linear terms). Park HR factor, temperature, wind, umpire zone, catcher framing.
+- **First-inning adjustments**: Data-driven multipliers on matchup rates before Markov chain. HR/hits +12%, HBP -13%. Asymmetric by half: top of 1st K+2%/BB-1% (home pitcher advantage), bottom K-2%/BB+1% (away pitcher disadvantage). Based on FanGraphs first-inning home field research.
+- **Environmental adjustments**: Modify transition probabilities (not separate linear terms). Per-hit-type park factors (1B/2B/3B/HR from FanGraphs). Temperature and wind adjust HR, doubles, and triples (at 100%/40%/30% of HR coefficient). Umpire zone, catcher framing.
+- **Platoon split shrinkage**: Split rates regressed toward player's overall rate using Marcel (constant=500 PA per The Book Ch. 6). Prevents noise from small split samples.
 - **Calibration**: Isotonic regression (not Platt scaling). Evaluate with ECE, Brier Score, calibration plot.
 - **Betting**: Power method vig removal. 1/6 fractional Kelly capped at 2% bankroll. Minimum 3% edge to bet. Track CLV.
 
@@ -35,45 +36,52 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - [x] Backtest v0.2.0 — first-inning adjustments reduced raw bias from +5.4% to -0.3%
 - [x] Backtest v0.3.0 — weather adjustments (temperature + wind) applied to all 15,431 games
 - [x] Isotonic calibrator trained on 2019-2024, tested on 2025
+- [x] Backtest v0.4.0 — Tier 1 improvements: platoon shrinkage, expanded park/weather/wind, home/away asymmetry
 
-**Backtest Results (v0.3.0-weather):**
+**Backtest Results (v0.4.0 — Tier 1 improvements):**
 
-| Metric | v0.2.0 (no weather) | v0.3.0 (weather) | Change |
+| Metric | v0.3.0 (before) | v0.4.0 Tier 1 (after) | Change |
 |--------|--------------------|--------------------|--------|
-| Mean Prediction (actual: 0.503) | 0.5000 | 0.4984 | -0.002 |
-| Brier Score (all) | 0.2505 | 0.2504 | -0.0001 (improved) |
-| Brier Skill (all) | -0.0021 | -0.0016 | +0.0005 (improved) |
-| ECE (all) | 0.0329 | 0.0328 | -0.0001 (improved) |
-| Prediction std | 0.0884 | 0.0891 | +0.0007 (wider spread) |
-| 2025 Cal. Brier | 0.2488 | 0.2487 | -0.0001 (improved) |
-| 2025 Cal. Brier Skill | +0.0047 | +0.0052 | +0.0005 (improved) |
+| Mean Prediction (actual: 0.503) | 0.4984 | 0.4889 | -0.010 |
+| Brier Score (all) | 0.2504 | 0.2479 | **-0.0025 (improved)** |
+| Brier Skill (all) | -0.0016 | **+0.0082** | **+0.0098 (major improvement)** |
+| ECE (all) | 0.0328 | 0.0140 | **-0.0188 (57% better)** |
+| Prediction std (raw) | 0.0891 | 0.0543 | -0.035 (tighter, less noise) |
+| Calibrated std | 0.048 | 0.0535 | **+0.006 (wider usable spread)** |
+| 2025 Raw Brier Skill | +0.0052 | **+0.0065** | **+0.0013 (improved)** |
+
+**v0.4.0 Tier 1 changes:**
+1. Platoon split shrinkage (Marcel, constant=500 PA, regress toward player overall rate)
+2. Per-hit-type park factors (1B/2B/3B from FanGraphs, seeded for all 30 parks)
+3. Home/away asymmetric first-inning adjustments (K +/-2%, BB +/-1%)
+4. Temperature/wind adjustments expanded to doubles (40% of HR coeff) and triples (30%)
+5. Security: removed hardcoded Supabase credentials from all scripts
 
 **High-Confidence (calibrated, all games):**
-- P(NRFI) > 0.54: 3,632 games → actual 56.9%
-- P(NRFI) > 0.56: 1,718 games → actual 58.5%
-- P(NRFI) > 0.58: 1,359 games → actual 58.9%
-- P(NRFI) > 0.60: 103 games → actual 64.1%
+- P(NRFI) > 0.54: 2,643 games → actual 58.2%
+- P(NRFI) > 0.58: 961 games → actual 61.2%
+- P(NRFI) > 0.60: 155 games → actual 65.8%
 
 **High-Confidence (2025 out-of-sample):**
-- P(NRFI) > 0.54: 455 games → actual 56.0%
-- P(NRFI) > 0.56: 164 games → actual 56.1%
-- P(NRFI) > 0.58: 125 games → actual 56.8%
+- P(NRFI) > 0.54: 424 games → actual 55.9%
+- P(NRFI) > 0.58: 139 games → actual 63.3%
 
 ### Phase 4: Live Pipeline & Dashboard
 - [x] Odds API client (SportsGameOdds) — fetches NRFI/YRFI lines, vig removal, tests pass
 - [x] Weather forecast API (Tomorrow.io) — pre-game forecasts, dome detection, tests pass
 - [x] Isotonic calibrator wired into prediction pipeline (loaded from config/calibrator.json)
-- [x] First-inning adjustments wired into prediction pipeline (matches backtest ordering)
+- [x] First-inning adjustments wired into prediction pipeline (asymmetric top/bottom)
 - [x] Streamlit dashboard — today's picks, model performance, bet history
 - [x] Weather seeding script for historical data (scripts/seed_weather.py)
 - [ ] Daily orchestration cron job
 - [ ] Slack alerts for +EV picks
 
 ## Next Steps
-1. Apply Marcel shrinkage to platoon split rates (currently unshrunk)
-2. Seed umpire data for umpire zone adjustments
-3. Investigate further discrimination improvements
+1. Implement pitcher-specific GIDP rate (use GB% instead of flat 12%)
+2. Add sprint speed adjustments to baserunner advancement probabilities
+3. Seed umpire/catcher framing data for zone and framing adjustments
 4. Build daily orchestration pipeline (fetch lineups → weather → odds → predict → alert)
+5. Consider Venn-Abers calibration upgrade (probability intervals for bet sizing)
 
 ## Key Files
 - `docs/STRATEGY.md` — Full mathematical framework, formulas, corrections, and detailed reasoning. READ THIS before building any core engine component.

@@ -15,25 +15,27 @@ import time
 import json
 import requests
 import numpy as np
+from dotenv import load_dotenv
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
 
-from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate
+from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate, apply_marcel_shrinkage
 from src.markov.chain import compute_p_zero_runs
-from src.markov.adjustments import apply_all_adjustments, adjust_for_first_inning
+from src.markov.adjustments import (
+    apply_all_adjustments,
+    adjust_for_first_inning,
+    adjust_for_first_inning_top,
+    adjust_for_first_inning_bottom,
+)
 from src.calibration.calibrator import NRFICalibrator, compute_ece, compute_calibration_curve
 
 # ---------------------------------------------------------------------------
 # Supabase config
 # ---------------------------------------------------------------------------
-SUPABASE_URL = "https://cdomrqoslgewamcqhbal.supabase.co"
-SUPABASE_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNkb21ycW9zbGdld2FtY3FoYmFsIiwi"
-    "cm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTAxMDIwNSwiZXhwIjoyMDkw"
-    "NTg2MjA1fQ._sYGKhDp5LL-8G7ZxZm2xsjfQBuUh-L4-0TEwKatvvk"
-)
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 SB_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -223,8 +225,12 @@ def get_marcel_weighted_rates(player_id, current_season, table, idx, league_rate
     return result
 
 
-def get_best_split_rates(player_id, season, player_type, opponent_hand, idx):
-    """Fetch platoon split rates from in-memory index."""
+PLATOON_SHRINKAGE_CONSTANT = 500
+
+
+def get_best_split_rates(player_id, season, player_type, opponent_hand, idx,
+                         overall_rates=None):
+    """Fetch platoon split rates from in-memory index, shrunk toward overall rates."""
     if player_type == 'batter':
         split = f'vs_{"RHP" if opponent_hand == "R" else "LHP"}'
     else:
@@ -233,9 +239,23 @@ def get_best_split_rates(player_id, season, player_type, opponent_hand, idx):
     row = idx['platoon_splits'].get((player_id, season, player_type, split))
     if row is None:
         return None
-    if int(row.get('pa', 0) or 0) < 30:
+    split_pa = int(row.get('pa', 0) or 0)
+    if split_pa < 30:
         return None
-    return extract_rates(row)
+
+    raw_rates = extract_rates(row)
+
+    # Apply shrinkage toward overall player rates if available
+    if overall_rates is not None:
+        shrunk = {}
+        for key in OUTCOME_KEYS:
+            shrunk[key] = apply_marcel_shrinkage(
+                raw_rates[key], overall_rates[key], split_pa,
+                shrinkage_constant=PLATOON_SHRINKAGE_CONSTANT,
+            )
+        return shrunk
+
+    return raw_rates
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +292,12 @@ def predict_game(game, idx):
         return None
     league_rates = extract_rates(league_row)
 
-    # Park factor
+    # Park factors (all hit types)
     park = idx['parks'].get(park_id, {})
     park_hr_factor = float(park.get('hr_factor', 100) or 100)
+    park_single_factor = float(park.get('single_factor', 100) or 100)
+    park_double_factor = float(park.get('double_factor', 100) or 100)
+    park_triple_factor = float(park.get('triple_factor', 100) or 100)
 
     # Weather data
     weather = idx['weather'].get(game_pk, {})
@@ -297,8 +320,10 @@ def predict_game(game, idx):
     # --- Top of 1st: away batters vs home pitcher ---
     away_rates = build_half_inning_rates(
         away_lineup, home_pitcher_id, home_pitcher_hand,
-        season, league_rates, park_hr_factor,
+        season, league_rates,
+        park_hr_factor, park_single_factor, park_double_factor, park_triple_factor,
         temperature_f, wind_speed_mph, wind_relative, idx,
+        half='top',
     )
     if away_rates is None:
         return None
@@ -308,8 +333,10 @@ def predict_game(game, idx):
     # --- Bottom of 1st: home batters vs away pitcher ---
     home_rates = build_half_inning_rates(
         home_lineup, away_pitcher_id, away_pitcher_hand,
-        season, league_rates, park_hr_factor,
+        season, league_rates,
+        park_hr_factor, park_single_factor, park_double_factor, park_triple_factor,
         temperature_f, wind_speed_mph, wind_relative, idx,
+        half='bottom',
     )
     if home_rates is None:
         return None
@@ -334,8 +361,11 @@ def predict_game(game, idx):
 
 
 def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
-                            league_rates, park_hr_factor,
-                            temperature_f, wind_speed_mph, wind_relative, idx):
+                            league_rates,
+                            park_hr_factor, park_single_factor,
+                            park_double_factor, park_triple_factor,
+                            temperature_f, wind_speed_mph, wind_relative,
+                            idx, half='top'):
     """
     Build adjusted matchup rates for each batter in a lineup.
     Returns list of rate dicts, or None if pitcher has no stats.
@@ -347,6 +377,9 @@ def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
     if pitcher_rates is None:
         pitcher_rates = dict(league_rates)
 
+    # Select half-specific first-inning adjustment
+    fi_adjust = adjust_for_first_inning_top if half == 'top' else adjust_for_first_inning_bottom
+
     batter_matchup_list = []
 
     for lineup_row in lineup:
@@ -354,35 +387,40 @@ def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
         batter_info = idx['players'].get(batter_id, {})
         batter_hand = batter_info.get('bats', 'R') or 'R'
 
-        # Try platoon split first
+        # Get overall batter rates first (shrinkage target for splits)
+        batter_overall = get_marcel_weighted_rates(
+            batter_id, season, 'batter_stats', idx, league_rates,
+        )
+        if batter_overall is None:
+            batter_overall = dict(league_rates)
+
+        # Try platoon split (shrunk toward overall rates)
         split_rates = get_best_split_rates(
             batter_id, season, 'batter', pitcher_hand, idx,
+            overall_rates=batter_overall,
         )
-        if split_rates is not None:
-            batter_rates = split_rates
-        else:
-            batter_rates = get_marcel_weighted_rates(
-                batter_id, season, 'batter_stats', idx, league_rates,
-            )
-        if batter_rates is None:
-            batter_rates = dict(league_rates)
+        batter_rates = split_rates if split_rates is not None else batter_overall
 
-        # Pitcher split rates
+        # Pitcher split rates (shrunk toward overall pitcher rates)
         pitcher_split = get_best_split_rates(
             pitcher_id, season, 'pitcher', batter_hand, idx,
+            overall_rates=pitcher_rates,
         )
         p_rates = pitcher_split if pitcher_split is not None else pitcher_rates
 
         # Odds Ratio matchup
         matchup = compute_matchup_rates(batter_rates, p_rates, league_rates)
 
-        # First-inning adjustment (data-driven multipliers)
-        fi_adjusted = adjust_for_first_inning(matchup)
+        # First-inning adjustment (asymmetric by half)
+        fi_adjusted = fi_adjust(matchup)
 
         # Environmental adjustments (park + weather)
         adjusted = apply_all_adjustments(
             fi_adjusted,
             park_hr_factor=park_hr_factor,
+            park_single_factor=park_single_factor,
+            park_double_factor=park_double_factor,
+            park_triple_factor=park_triple_factor,
             temperature_f=temperature_f,
             wind_speed_mph=wind_speed_mph,
             wind_relative=wind_relative,

@@ -24,25 +24,18 @@ FIRST_INNING_MULTIPLIERS = {
 }
 
 
-def adjust_for_first_inning(rates: dict) -> dict:
-    """
-    Apply first-inning-specific multipliers to matchup rates.
-
-    Multiplies each outcome rate by its empirical first-inning adjustment,
-    then recomputes out_in_play = 1 - sum(other rates).
-    If out_in_play drops below 0.01, clip it and scale down other rates.
-    """
+def _apply_first_inning_multipliers(rates: dict, multipliers: dict) -> dict:
+    """Apply a set of first-inning multipliers and renormalize."""
     result = dict(rates)
     non_residual = [k for k in result if k != 'out_in_play']
 
     for k in non_residual:
-        multiplier = FIRST_INNING_MULTIPLIERS.get(k, 1.0)
+        multiplier = multipliers.get(k, 1.0)
         result[k] *= multiplier
 
     other_sum = sum(result[k] for k in non_residual)
 
     if other_sum > 0.99:
-        # Scale down to leave at least 1% for out_in_play
         scale = 0.99 / other_sum
         for k in non_residual:
             result[k] *= scale
@@ -51,6 +44,51 @@ def adjust_for_first_inning(rates: dict) -> dict:
         result['out_in_play'] = 1.0 - other_sum
 
     return result
+
+
+def adjust_for_first_inning(rates: dict) -> dict:
+    """
+    Apply first-inning-specific multipliers to matchup rates.
+    Uses league-wide averages (no home/away distinction).
+    """
+    return _apply_first_inning_multipliers(rates, FIRST_INNING_MULTIPLIERS)
+
+
+# Home/away asymmetric first-inning adjustments.
+# FanGraphs research: home pitchers have K%-BB% of 6.8% vs away 3.6%.
+# Home pitchers throw 0.15 mph faster in 1st inning. Effect persists
+# even without fans (2020). Explanation: warmup timing advantage.
+FIRST_INNING_MULTIPLIERS_TOP = {
+    # Top of 1st: away batters face HOME pitcher (pitcher has advantage)
+    'k': 0.99 * 1.02,     # +2% K rate (home pitcher advantage)
+    'bb': 1.00 * 0.99,    # -1% BB rate
+    'hr': 1.12,
+    'single': 1.12,
+    'double': 1.12,
+    'triple': 1.12,
+    'hbp': 0.87,
+}
+
+FIRST_INNING_MULTIPLIERS_BOTTOM = {
+    # Bottom of 1st: home batters face AWAY pitcher (pitcher disadvantaged)
+    'k': 0.99 * 0.98,     # -2% K rate (away pitcher disadvantage)
+    'bb': 1.00 * 1.01,    # +1% BB rate
+    'hr': 1.12,
+    'single': 1.12,
+    'double': 1.12,
+    'triple': 1.12,
+    'hbp': 0.87,
+}
+
+
+def adjust_for_first_inning_top(rates: dict) -> dict:
+    """Apply first-inning multipliers for top of 1st (away batters vs home pitcher)."""
+    return _apply_first_inning_multipliers(rates, FIRST_INNING_MULTIPLIERS_TOP)
+
+
+def adjust_for_first_inning_bottom(rates: dict) -> dict:
+    """Apply first-inning multipliers for bottom of 1st (home batters vs away pitcher)."""
+    return _apply_first_inning_multipliers(rates, FIRST_INNING_MULTIPLIERS_BOTTOM)
 
 
 def normalize_rates(rates: dict) -> dict:
@@ -91,47 +129,77 @@ def _recalculate_residual(rates: dict) -> dict:
     return result
 
 
-def adjust_for_park(rates: dict, park_hr_factor: float) -> dict:
+def adjust_for_park(
+    rates: dict,
+    park_hr_factor: float,
+    park_single_factor: float = 100.0,
+    park_double_factor: float = 100.0,
+    park_triple_factor: float = 100.0,
+) -> dict:
     """
-    Multiply HR rate by (park_hr_factor / 100). Recalculate residual.
+    Multiply each hit type by its park factor / 100. Recalculate residual.
 
-    park_hr_factor: 100 = neutral, 115 = 15% more HR (e.g. Coors).
+    FanGraphs publishes per-hit-type park factors. All are scaled to 100
+    (neutral). Example: Coors HR=131, 1B=105, 2B=107, 3B=275.
+
+    HR factors are most stable year-to-year (r=0.74). Non-HR factors
+    are noisier (1B r=0.37, 2B r=0.47, 3B r=0.66) and should use
+    longer rolling averages and be regressed harder toward 100.
     """
     result = dict(rates)
     result['hr'] *= park_hr_factor / 100.0
+    result['single'] *= park_single_factor / 100.0
+    result['double'] *= park_double_factor / 100.0
+    result['triple'] *= park_triple_factor / 100.0
     return _recalculate_residual(result)
 
 
 def adjust_for_temperature(rates: dict, temperature_f: float) -> dict:
     """
-    Adjust HR rate for temperature.
+    Adjust batted-ball rates for temperature.
 
-    For every 10°F above 75°F, increase HR rate by 1.5%.
-    Below 75°F, decrease by same amount.
-    Formula: hr_multiplier = 1 + (temperature_f - 75) * 0.0015
+    Temperature affects all fly ball outcomes via air density/drag.
+    HR is most affected; doubles and triples at reduced magnitudes.
+    Based on Dr. Alan Nathan's research (+3ft carry per 10°F above 75°F).
+
+    Coefficients per °F from 75°F baseline:
+      HR:     0.0015 (1.5% per 10°F)
+      Double: 0.0006 (40% of HR effect — wall doubles are temperature-sensitive)
+      Triple: 0.00045 (30% of HR effect — gap hits less affected)
     """
     result = dict(rates)
-    hr_multiplier = 1.0 + (temperature_f - 75.0) * 0.0015
-    result['hr'] *= hr_multiplier
+    delta = temperature_f - 75.0
+    result['hr'] *= 1.0 + delta * 0.0015
+    result['double'] *= 1.0 + delta * 0.0006
+    result['triple'] *= 1.0 + delta * 0.00045
     return _recalculate_residual(result)
 
 
 def adjust_for_wind(rates: dict, wind_speed_mph: float, wind_relative: str) -> dict:
     """
-    Adjust HR rate for wind direction and speed.
+    Adjust batted-ball rates for wind direction and speed.
 
-    'out': hr_multiplier = 1 + wind_speed_mph * 0.008
-    'in':  hr_multiplier = 1 - wind_speed_mph * 0.008  (floor at 0.5)
+    Wind affects all fly ball outcomes. HR most affected; doubles and triples
+    at reduced magnitudes. At Wrigley, wind-in vs wind-out swings total runs
+    by 42%, far more than HR alone explains.
+
+    Coefficients per mph:
+      HR:     0.008 (0.8% per mph)
+      Double: 0.0032 (40% of HR — wall doubles affected by carry)
+      Triple: 0.0016 (20% of HR — gap hits less affected)
+
     'cross_l', 'cross_r', 'calm': no adjustment.
     """
     result = dict(rates)
 
     if wind_relative == 'out':
-        hr_multiplier = 1.0 + wind_speed_mph * 0.008
-        result['hr'] *= hr_multiplier
+        result['hr'] *= 1.0 + wind_speed_mph * 0.008
+        result['double'] *= 1.0 + wind_speed_mph * 0.0032
+        result['triple'] *= 1.0 + wind_speed_mph * 0.0016
     elif wind_relative == 'in':
-        hr_multiplier = max(0.5, 1.0 - wind_speed_mph * 0.008)
-        result['hr'] *= hr_multiplier
+        result['hr'] *= max(0.5, 1.0 - wind_speed_mph * 0.008)
+        result['double'] *= max(0.7, 1.0 - wind_speed_mph * 0.0032)
+        result['triple'] *= max(0.7, 1.0 - wind_speed_mph * 0.0016)
     # 'cross_l', 'cross_r', 'calm' — no adjustment
 
     return _recalculate_residual(result)
@@ -164,6 +232,9 @@ def adjust_for_catcher_framing(rates: dict, framing_runs_per_game: float) -> dic
 def apply_all_adjustments(
     rates: dict,
     park_hr_factor: float = 100.0,
+    park_single_factor: float = 100.0,
+    park_double_factor: float = 100.0,
+    park_triple_factor: float = 100.0,
     temperature_f: float = 75.0,
     wind_speed_mph: float = 0.0,
     wind_relative: str = 'calm',
@@ -173,7 +244,10 @@ def apply_all_adjustments(
     """
     Apply all environmental adjustments in sequence, then normalize.
     """
-    result = adjust_for_park(rates, park_hr_factor)
+    result = adjust_for_park(
+        rates, park_hr_factor, park_single_factor,
+        park_double_factor, park_triple_factor,
+    )
     result = adjust_for_temperature(result, temperature_f)
     result = adjust_for_wind(result, wind_speed_mph, wind_relative)
     result = adjust_for_umpire(result, walk_rate_impact)

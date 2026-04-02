@@ -9,17 +9,16 @@ Resumable: skips game_pks that already have lineups.
 Uses ON CONFLICT (game_pk, team_id, batting_order) DO NOTHING.
 """
 
+import os
 import requests
 import time
 import sys
+from dotenv import load_dotenv
 
-SUPABASE_URL = "https://cdomrqoslgewamcqhbal.supabase.co"
-SUPABASE_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNkb21ycW9zbGdld2FtY3FoYmFsIiwi"
-    "cm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTAxMDIwNSwiZXhwIjoyMDkw"
-    "NTg2MjA1fQ._sYGKhDp5LL-8G7ZxZm2xsjfQBuUh-L4-0TEwKatvvk"
-)
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
+
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
 

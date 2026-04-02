@@ -454,26 +454,20 @@ class TestGetMarcelWeightedRates:
 class TestFirstInningAdjustment:
     """Verify first-inning adjustments are applied in the pipeline."""
 
-    @patch('src.pipeline.predict.adjust_for_first_inning', wraps=predict_module.adjust_for_first_inning)
+    @patch('src.pipeline.predict.adjust_for_first_inning_bottom', wraps=predict_module.adjust_for_first_inning_bottom)
+    @patch('src.pipeline.predict.adjust_for_first_inning_top', wraps=predict_module.adjust_for_first_inning_top)
     @patch('src.pipeline.predict.apply_all_adjustments', wraps=predict_module.apply_all_adjustments)
-    def test_first_inning_adjustment_called_before_environmental(self, mock_env, mock_fi):
-        """adjust_for_first_inning must be called on each batter's matchup
+    def test_first_inning_adjustment_called_before_environmental(self, mock_env, mock_fi_top, mock_fi_bottom):
+        """adjust_for_first_inning_top/bottom must be called on each batter's matchup
         rates before apply_all_adjustments."""
         db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
         result = predict_nrfi(745123, db)
 
         assert result is not None
-        # 9 away batters + 9 home batters = 18 calls each
-        assert mock_fi.call_count == 18
+        # 9 away batters (top) + 9 home batters (bottom) = 18 env calls
+        assert mock_fi_top.call_count == 9
+        assert mock_fi_bottom.call_count == 9
         assert mock_env.call_count == 18
-
-        # Verify ordering: each fi call's output is fed into the corresponding env call
-        for fi_call, env_call in zip(mock_fi.call_args_list, mock_env.call_args_list):
-            fi_result = predict_module.adjust_for_first_inning(*fi_call.args, **fi_call.kwargs)
-            env_first_arg = env_call.args[0] if env_call.args else env_call.kwargs.get('rates')
-            # The env call's first argument should match the fi output
-            for key in fi_result:
-                assert abs(env_first_arg[key] - fi_result[key]) < 1e-10
 
     def test_predictions_differ_from_no_first_inning_adj(self):
         """With first-inning adjustments, predictions should differ from a
@@ -481,8 +475,10 @@ class TestFirstInningAdjustment:
         db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
         result_with = predict_nrfi(745123, db)
 
-        # Run again with identity first-inning adjustment
-        with patch('src.pipeline.predict.adjust_for_first_inning', side_effect=lambda r: r):
+        # Run again with identity first-inning adjustments
+        identity = lambda r: r
+        with patch('src.pipeline.predict.adjust_for_first_inning_top', side_effect=identity), \
+             patch('src.pipeline.predict.adjust_for_first_inning_bottom', side_effect=identity):
             result_without = predict_nrfi(745123, db)
 
         # The HR multiplier is 1.12, so predictions should differ

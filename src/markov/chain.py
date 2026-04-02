@@ -200,25 +200,7 @@ def _advance_walk(config: int) -> tuple:
     on_1st, on_2nd, on_3rd = _runners_on(config)
 
     runs = 0
-    # Batter goes to 1st; forced runners advance
-    new_1st = True
-    if on_1st:
-        new_2nd = True
-        if on_2nd:
-            new_3rd = True
-            if on_3rd:
-                runs = 1  # bases loaded walk
-            else:
-                pass  # 3rd now occupied
-        else:
-            new_2nd = True
-            new_3rd = on_3rd  # 3rd stays as is
-    else:
-        new_2nd = on_2nd
-        new_3rd = on_3rd
-
-    # Recalculate properly with forced-runner logic
-    # A walk forces: batter to 1st, runners advance only if forced
+    # Batter goes to 1st; forced runners advance only if forced
     new_1st = True
     if on_1st:
         new_2nd = True
@@ -340,12 +322,6 @@ def compute_p_zero_runs(
             config_name = BASE_CONFIGS[config]
 
             # --- Strikeout ---
-            _apply_out_event(
-                rates['k'], config, outs, 0,
-                prob_z, prob_s,
-                new_zero, new_scored,
-                new_absorb_zero, new_absorb_scored,
-            )
             new_absorb_zero, new_absorb_scored = (
                 _apply_out_event_ret(
                     rates['k'], config, outs, 0,
@@ -563,11 +539,6 @@ def _apply_out_event_ret(
             new_scored[dest] += prob_s * rate
 
     return absorb_zero, absorb_scored
-
-
-def _apply_out_event(*args):
-    """Compatibility shim — use _apply_out_event_ret instead."""
-    pass
 
 
 def _fallback_advancement(config_name: str, event: str) -> list:

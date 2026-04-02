@@ -12,9 +12,14 @@ import logging
 import os
 from typing import Optional
 
-from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate
+from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate, apply_marcel_shrinkage
 from src.markov.chain import compute_p_zero_runs
-from src.markov.adjustments import apply_all_adjustments, adjust_for_first_inning
+from src.markov.adjustments import (
+    apply_all_adjustments,
+    adjust_for_first_inning,
+    adjust_for_first_inning_top,
+    adjust_for_first_inning_bottom,
+)
 from src.betting.edge import (
     american_to_decimal,
     remove_vig_power_method,
@@ -141,15 +146,27 @@ def get_marcel_weighted_rates(
     return result
 
 
+# Shrinkage constant for platoon splits. Per Tom Tango's The Book (Ch. 6),
+# platoon skill has very small true variance. Regress split rates toward
+# the player's overall rate. 500 PA is a compromise between LHB (~1000)
+# and RHB (~2200) constants from The Book.
+PLATOON_SHRINKAGE_CONSTANT = 500
+
+
 def get_best_split_rates(
     player_id: int,
     season: int,
     player_type: str,
     opponent_hand: str,
     db,
+    overall_rates: Optional[dict] = None,
 ) -> Optional[dict]:
     """
-    Fetch platoon split rates for a player. Returns None if not found or PA < 30.
+    Fetch platoon split rates for a player, shrunk toward overall rates.
+
+    Returns None if not found or PA < 30.
+    If overall_rates is provided, split rates are regressed toward them
+    using Marcel shrinkage with a 500 PA constant.
 
     player_type: 'batter' or 'pitcher'
     opponent_hand: 'R' or 'L'
@@ -173,10 +190,23 @@ def get_best_split_rates(
         return None
 
     row = resp.data[0]
-    if int(row.get('pa', 0) or 0) < 30:
+    split_pa = int(row.get('pa', 0) or 0)
+    if split_pa < 30:
         return None
 
-    return _extract_rates(row)
+    raw_rates = _extract_rates(row)
+
+    # Apply shrinkage toward overall player rates if available
+    if overall_rates is not None:
+        shrunk = {}
+        for key in OUTCOME_KEYS:
+            shrunk[key] = apply_marcel_shrinkage(
+                raw_rates[key], overall_rates[key], split_pa,
+                shrinkage_constant=PLATOON_SHRINKAGE_CONSTANT,
+            )
+        return shrunk
+
+    return raw_rates
 
 
 def _build_half_inning_rates(
@@ -190,9 +220,15 @@ def _build_half_inning_rates(
     umpire: Optional[dict],
     is_indoor: bool,
     db,
+    half: str = 'top',
 ) -> tuple[list[dict], list[str]]:
     """
     Build adjusted matchup rates for each batter in a lineup.
+
+    Args:
+        half: 'top' (away batters vs home pitcher) or 'bottom'
+              (home batters vs away pitcher). Controls asymmetric
+              first-inning adjustments.
 
     Returns (list_of_matchup_rate_dicts, list_of_adjustments_applied).
     """
@@ -206,6 +242,9 @@ def _build_half_inning_rates(
         logger.warning('Pitcher %d has no stats — using league averages', pitcher_id)
         pitcher_rates = dict(league_rates)
 
+    # Select half-specific first-inning adjustment
+    fi_adjust = adjust_for_first_inning_top if half == 'top' else adjust_for_first_inning_bottom
+
     batter_matchup_list = []
 
     for lineup_row in lineup:
@@ -213,36 +252,40 @@ def _build_half_inning_rates(
         batter_hand = lineup_row.get('bats', 'R')
 
         # --- Batter rates ---
-        # Try platoon split first
+        # Get overall rates first (needed as shrinkage target for splits)
+        batter_overall = get_marcel_weighted_rates(
+            batter_id, season, 'batter_stats', db, league_rates,
+        )
+        if batter_overall is None:
+            batter_overall = dict(league_rates)
+
+        # Try platoon split (shrunk toward overall rates)
         split_rates = get_best_split_rates(
             batter_id, season, 'batter', pitcher_hand, db,
+            overall_rates=batter_overall,
         )
-        if split_rates is not None:
-            batter_rates = split_rates
-        else:
-            batter_rates = get_marcel_weighted_rates(
-                batter_id, season, 'batter_stats', db, league_rates,
-            )
-        if batter_rates is None:
-            logger.warning(
-                'Batter %d has no stats — using league averages', batter_id,
-            )
-            batter_rates = dict(league_rates)
+        batter_rates = split_rates if split_rates is not None else batter_overall
 
         # --- Pitcher split rates ---
         pitcher_split = get_best_split_rates(
             pitcher_id, season, 'pitcher', batter_hand, db,
+            overall_rates=pitcher_rates,
         )
         p_rates = pitcher_split if pitcher_split is not None else pitcher_rates
 
         # --- Odds Ratio matchup ---
         matchup = compute_matchup_rates(batter_rates, p_rates, league_rates)
 
-        # --- First-inning adjustment (before environmental adjustments) ---
-        matchup = adjust_for_first_inning(matchup)
+        # --- First-inning adjustment (asymmetric by half) ---
+        matchup = fi_adjust(matchup)
 
         # --- Environmental adjustments ---
-        adj_kwargs = {'park_hr_factor': float(park.get('hr_factor', 100) or 100)}
+        adj_kwargs = {
+            'park_hr_factor': float(park.get('hr_factor', 100) or 100),
+            'park_single_factor': float(park.get('single_factor', 100) or 100),
+            'park_double_factor': float(park.get('double_factor', 100) or 100),
+            'park_triple_factor': float(park.get('triple_factor', 100) or 100),
+        }
         adjustments_applied.add('park_factor')
 
         if not is_indoor:
@@ -409,6 +452,7 @@ def predict_nrfi(game_pk: int, supabase_client) -> Optional[dict]:
         umpire=umpire,
         is_indoor=is_indoor,
         db=db,
+        half='top',
     )
 
     p_nrfi_top = compute_p_zero_runs(away_matchup_rates, max_batters=9)
@@ -427,6 +471,7 @@ def predict_nrfi(game_pk: int, supabase_client) -> Optional[dict]:
         umpire=umpire,
         is_indoor=is_indoor,
         db=db,
+        half='bottom',
     )
 
     p_nrfi_bottom = compute_p_zero_runs(home_matchup_rates, max_batters=9)

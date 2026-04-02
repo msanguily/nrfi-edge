@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """Seed pitcher_stats and batter_stats tables from pybaseball (FanGraphs data)."""
 
+import os
 import requests
 import time
 import math
 import warnings
 import sys
+from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore")
 
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
+
 from pybaseball import pitching_stats, batting_stats, chadwick_register
 
-SUPABASE_URL = "https://cdomrqoslgewamcqhbal.supabase.co"
-SUPABASE_KEY = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNkb21ycW9zbGdld2FtY3FoYmFsIiwi"
-    "cm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTAxMDIwNSwiZXhwIjoyMDkw"
-    "NTg2MjA1fQ._sYGKhDp5LL-8G7ZxZm2xsjfQBuUh-L4-0TEwKatvvk"
-)
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 UPSERT_HEADERS = {
     "apikey": SUPABASE_KEY,

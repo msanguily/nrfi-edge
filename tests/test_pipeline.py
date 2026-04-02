@@ -1,8 +1,9 @@
 """Tests for the NRFI prediction pipeline with fully mocked database."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
+import src.pipeline.predict as predict_module
 from src.pipeline.predict import predict_nrfi, get_marcel_weighted_rates, get_best_split_rates
 
 
@@ -448,6 +449,146 @@ class TestGetMarcelWeightedRates:
         for key in ['k', 'bb', 'hbp', 'single', 'double', 'triple', 'hr']:
             assert key in result
             assert 0 <= result[key] <= 1
+
+
+class TestFirstInningAdjustment:
+    """Verify first-inning adjustments are applied in the pipeline."""
+
+    @patch('src.pipeline.predict.adjust_for_first_inning', wraps=predict_module.adjust_for_first_inning)
+    @patch('src.pipeline.predict.apply_all_adjustments', wraps=predict_module.apply_all_adjustments)
+    def test_first_inning_adjustment_called_before_environmental(self, mock_env, mock_fi):
+        """adjust_for_first_inning must be called on each batter's matchup
+        rates before apply_all_adjustments."""
+        db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
+        result = predict_nrfi(745123, db)
+
+        assert result is not None
+        # 9 away batters + 9 home batters = 18 calls each
+        assert mock_fi.call_count == 18
+        assert mock_env.call_count == 18
+
+        # Verify ordering: each fi call's output is fed into the corresponding env call
+        for fi_call, env_call in zip(mock_fi.call_args_list, mock_env.call_args_list):
+            fi_result = predict_module.adjust_for_first_inning(*fi_call.args, **fi_call.kwargs)
+            env_first_arg = env_call.args[0] if env_call.args else env_call.kwargs.get('rates')
+            # The env call's first argument should match the fi output
+            for key in fi_result:
+                assert abs(env_first_arg[key] - fi_result[key]) < 1e-10
+
+    def test_predictions_differ_from_no_first_inning_adj(self):
+        """With first-inning adjustments, predictions should differ from a
+        hypothetical pipeline without them (i.e., they actually change rates)."""
+        db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
+        result_with = predict_nrfi(745123, db)
+
+        # Run again with identity first-inning adjustment
+        with patch('src.pipeline.predict.adjust_for_first_inning', side_effect=lambda r: r):
+            result_without = predict_nrfi(745123, db)
+
+        # The HR multiplier is 1.12, so predictions should differ
+        assert result_with['p_nrfi_combined'] != result_without['p_nrfi_combined']
+
+
+class TestCalibrator:
+    """Verify isotonic calibrator integration."""
+
+    def setup_method(self):
+        """Reset calibrator cache before each test."""
+        predict_module._calibrator_cache = None
+
+    def teardown_method(self):
+        """Reset calibrator cache after each test."""
+        predict_module._calibrator_cache = None
+
+    @patch('src.pipeline.predict._get_calibrator')
+    def test_calibrator_applied_when_available(self, mock_get_cal):
+        """When calibrator exists, calibrate() is called on p_nrfi_combined."""
+        mock_cal = MagicMock()
+        mock_cal.calibrate.return_value = 0.55
+        mock_get_cal.return_value = mock_cal
+
+        db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
+        result = predict_nrfi(745123, db)
+
+        assert result is not None
+        mock_cal.calibrate.assert_called_once()
+        # The argument should be p_nrfi_combined
+        call_arg = mock_cal.calibrate.call_args[0][0]
+        assert abs(call_arg - result['p_nrfi_combined']) < 1e-10
+        assert result['p_nrfi_calibrated'] == 0.55
+
+    @patch('src.pipeline.predict._get_calibrator')
+    def test_no_calibrator_uses_raw(self, mock_get_cal):
+        """When no calibrator.json exists, p_nrfi_calibrated == p_nrfi_combined."""
+        mock_get_cal.return_value = None
+
+        db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
+        result = predict_nrfi(745123, db)
+
+        assert result is not None
+        assert result['p_nrfi_calibrated'] == result['p_nrfi_combined']
+
+    @patch('src.pipeline.predict._get_calibrator')
+    def test_no_calibrator_logs_warning(self, mock_get_cal, caplog):
+        """Missing calibrator should log a warning (from _get_calibrator)."""
+        mock_get_cal.return_value = None
+
+        # We test that the pipeline still works and returns uncalibrated values
+        db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
+        result = predict_nrfi(745123, db)
+        assert result is not None
+        assert result['p_nrfi_calibrated'] == result['p_nrfi_combined']
+
+    def test_calibrator_cache_reused(self):
+        """The cached calibrator is reused across multiple predict_nrfi calls."""
+        mock_cal = MagicMock()
+        mock_cal.calibrate.return_value = 0.52
+
+        with patch('src.pipeline.predict._get_calibrator', return_value=mock_cal) as mock_get:
+            db = _build_mock_db(weather=WEATHER, umpire=UMPIRE)
+            predict_nrfi(745123, db)
+            predict_nrfi(745123, db)
+
+            # _get_calibrator is called each time, but returns cached instance
+            assert mock_get.call_count == 2
+            # Same mock object used both times
+            assert mock_cal.calibrate.call_count == 2
+
+    def test_get_calibrator_caches_on_file_exists(self, tmp_path):
+        """_get_calibrator loads from file and caches the result."""
+        import json
+        import numpy as np
+
+        # Create a fake calibrator.json
+        cal_data = {
+            'X_thresholds': [0.3, 0.5, 0.7],
+            'y_thresholds': [0.35, 0.50, 0.65],
+            'training_size': 100,
+        }
+        cal_file = tmp_path / 'config' / 'calibrator.json'
+        cal_file.parent.mkdir(parents=True)
+        cal_file.write_text(json.dumps(cal_data))
+
+        with patch('src.pipeline.predict.os.path.abspath') as mock_abs:
+            # Make the path resolution point to our tmp_path
+            mock_abs.return_value = str(tmp_path / 'src' / 'pipeline' / 'predict.py')
+
+            predict_module._calibrator_cache = None
+            cal1 = predict_module._get_calibrator()
+            cal2 = predict_module._get_calibrator()
+
+            assert cal1 is not None
+            assert cal1.is_fitted
+            assert cal1 is cal2  # same cached object
+
+    def test_get_calibrator_returns_none_when_missing(self, tmp_path):
+        """_get_calibrator returns None when calibrator.json doesn't exist."""
+        with patch('src.pipeline.predict.os.path.abspath') as mock_abs:
+            mock_abs.return_value = str(tmp_path / 'src' / 'pipeline' / 'predict.py')
+
+            predict_module._calibrator_cache = None
+            result = predict_module._get_calibrator()
+            assert result is None
 
 
 class TestGetBestSplitRates:

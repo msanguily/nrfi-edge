@@ -9,11 +9,12 @@ to produce a single-game NRFI prediction.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate
 from src.markov.chain import compute_p_zero_runs
-from src.markov.adjustments import apply_all_adjustments
+from src.markov.adjustments import apply_all_adjustments, adjust_for_first_inning
 from src.betting.edge import (
     american_to_decimal,
     remove_vig_power_method,
@@ -24,7 +25,33 @@ from src.betting.edge import (
 
 logger = logging.getLogger(__name__)
 
-MODEL_VERSION = '0.1.0'
+MODEL_VERSION = '0.2.0'
+
+# ---------------------------------------------------------------------------
+# Calibrator cache (loaded once on first use)
+# ---------------------------------------------------------------------------
+
+_calibrator_cache = None
+
+
+def _get_calibrator():
+    """Load and cache the isotonic calibrator from config/calibrator.json."""
+    global _calibrator_cache
+    if _calibrator_cache is not None:
+        return _calibrator_cache
+    cal_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        'config', 'calibrator.json',
+    )
+    if os.path.exists(cal_path):
+        from src.calibration.calibrator import NRFICalibrator
+        _calibrator_cache = NRFICalibrator()
+        _calibrator_cache.load(cal_path)
+        logger.info('Loaded calibrator from %s (%d training samples)',
+                     cal_path, _calibrator_cache.training_size)
+        return _calibrator_cache
+    logger.warning('No calibrator found at %s — using raw probabilities', cal_path)
+    return None
 
 OUTCOME_KEYS = ['k', 'bb', 'hbp', 'single', 'double', 'triple', 'hr']
 
@@ -210,6 +237,9 @@ def _build_half_inning_rates(
 
         # --- Odds Ratio matchup ---
         matchup = compute_matchup_rates(batter_rates, p_rates, league_rates)
+
+        # --- First-inning adjustment (before environmental adjustments) ---
+        matchup = adjust_for_first_inning(matchup)
 
         # --- Environmental adjustments ---
         adj_kwargs = {'park_hr_factor': float(park.get('hr_factor', 100) or 100)}
@@ -407,10 +437,13 @@ def predict_nrfi(game_pk: int, supabase_client) -> Optional[dict]:
     p_nrfi_combined = p_nrfi_top * p_nrfi_bottom
 
     # ------------------------------------------------------------------
-    # Step 8: Calibration placeholder
+    # Step 8: Isotonic calibration
     # ------------------------------------------------------------------
-    # TODO: Replace with isotonic regression calibrator in Phase 3
-    p_nrfi_calibrated = p_nrfi_combined
+    calibrator = _get_calibrator()
+    if calibrator is not None:
+        p_nrfi_calibrated = calibrator.calibrate(p_nrfi_combined)
+    else:
+        p_nrfi_calibrated = p_nrfi_combined
 
     # ------------------------------------------------------------------
     # Step 9: Compare against odds

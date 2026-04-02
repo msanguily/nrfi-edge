@@ -237,12 +237,26 @@ def process_season(season, batter_ids, pitcher_ids):
             print(f"    {i}/{pitcher_count} pitchers ...", flush=True)
         time.sleep(API_DELAY)
 
+    # Deduplicate: MLB API can return multiple entries for traded players.
+    # Keep the last entry (highest PA) for each unique key.
+    seen = {}
+    for row in rows:
+        key = (row["mlb_player_id"], row["season"], row["player_type"], row["split"])
+        if key not in seen or row["pa"] > seen[key]["pa"]:
+            seen[key] = row
+    deduped = list(seen.values())
+
+    before = len(rows)
+    after = len(deduped)
+    if before != after:
+        print(f"  Deduplicated: {before} -> {after} rows ({before - after} dupes removed)", flush=True)
+
     # Upsert all rows for this season
     sb_upsert(
-        "platoon_splits", rows,
+        "platoon_splits", deduped,
         on_conflict="mlb_player_id,season,player_type,split",
     )
-    return len(rows)
+    return len(deduped)
 
 
 def main():

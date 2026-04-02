@@ -18,25 +18,23 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - [x] Reference data seeded — teams, parks, league_averages, baserunner_advancement (Step 1.2)
 - [x] Historical games 2019-2025 — 15,431 games seeded (Step 1.3)
 - [x] Historical player stats — 1,770 pitcher-seasons, 3,519 batter-seasons (Step 1.4)
-- [ ] Platoon splits — seeding script exists but has not been run yet (Step 1.5)
-- [ ] First-inning pitcher stats — seeding script exists but no data populated (0 rows with first_inn_starts > 0) (Step 1.6)
+- [x] Platoon splits — 10,479 rows seeded across 2019-2025 (Step 1.5)
+- [x] First-inning pitcher stats — 2,547 pitcher-season rows across 2019-2025 (Step 1.6)
 
 ### Phase 2: Core Engine
-- [x] Odds Ratio module — code built, needs testing (Step 2.1)
-- [x] Markov chain engine — code built, needs testing (Step 2.2)
-- [x] Environmental adjustments — code built, needs testing (Step 2.3)
-- [x] Prediction pipeline — code built, needs testing (Step 2.4)
+- [x] Odds Ratio module — code built, tests pass (Step 2.1)
+- [x] Markov chain engine — code built with productive outs + GIDP, tests pass (Step 2.2)
+- [x] Environmental adjustments — code built, tests pass (Step 2.3)
+- [x] Prediction pipeline — code built, tests pass (Step 2.4)
 
 ### Phase 3–4
 - [ ] Backtesting (Phase 3)
 - [ ] Live pipeline (Phase 4)
 
 ## Next Steps
-1. Run platoon splits seeding (`scripts/seed_platoon_splits.py`)
-2. Run first-inning pitcher stats seeding (`scripts/seed_first_inning_stats.py`)
-3. Update park factors with current data
-4. Run all tests (`pytest tests/`)
-5. Begin Phase 3 backtesting
+1. Update park factors with current data
+2. Seed umpire data
+3. Begin Phase 3 backtesting
 
 ## Key Files
 - `docs/STRATEGY.md` — Full mathematical framework, formulas, corrections, and detailed reasoning. READ THIS before building any core engine component.

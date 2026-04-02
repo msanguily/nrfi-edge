@@ -1,6 +1,7 @@
 """Tests for the 26-state absorbing Markov chain engine."""
 
 import pytest
+import src.markov.chain as chain_module
 from src.markov.chain import (
     compute_p_zero_runs,
     state_index,
@@ -238,3 +239,67 @@ class TestSpecificScenarios:
         lineup = [_make_rates(triple=1.0)] + [_make_rates(k=1.0)] * 8
         result = compute_p_zero_runs(lineup, max_batters=9)
         assert abs(result - 1.0) < 1e-10, f"Stranded runner, expected 1.0, got {result}"
+
+
+class TestProductiveOuts:
+    """Test productive out (sac fly) and GIDP interaction."""
+
+    def test_productive_out_runner_on_3rd(self):
+        """With runner on 3rd, in-play outs can score the runner (sac fly)."""
+        # Triple puts runner on 3rd, then all out_in_play
+        lineup_oip = [_make_rates(triple=1.0)] + [_make_rates(out_in_play=1.0)] * 8
+        result_oip = compute_p_zero_runs(lineup_oip, max_batters=9)
+
+        # With strikeouts, runner on 3rd is always stranded (Ks aren't in-play)
+        lineup_k = [_make_rates(triple=1.0)] + [_make_rates(k=1.0)] * 8
+        result_k = compute_p_zero_runs(lineup_k, max_batters=9)
+
+        assert abs(result_k - 1.0) < 1e-10, "Ks should strand runner on 3rd"
+        assert result_oip < result_k, (
+            f"Productive outs should lower P(0 runs): oip={result_oip:.6f} vs k={result_k:.6f}"
+        )
+        # 20% sac fly chance per out with < 2 outs → P(survive) = 0.8^2 = 0.64
+        assert abs(result_oip - 0.64) < 0.01, f"Expected ~0.64, got {result_oip}"
+
+    def test_gidp_raises_p_zero(self):
+        """GIDP erases baserunners and ends innings faster, raising P(0 runs)."""
+        rates = _make_rates(single=0.20, double=0.05, out_in_play=0.75)
+        original_gidp = chain_module.GIDP_FRACTION
+
+        try:
+            # With GIDP active
+            chain_module.GIDP_FRACTION = 0.12
+            p_with = compute_p_zero_runs([rates] * 9, max_batters=9)
+
+            # Without GIDP
+            chain_module.GIDP_FRACTION = 0.0
+            p_without = compute_p_zero_runs([rates] * 9, max_batters=9)
+        finally:
+            chain_module.GIDP_FRACTION = original_gidp
+
+        assert p_with > p_without, (
+            f"GIDP should raise P(0 runs): with={p_with:.6f} vs without={p_without:.6f}"
+        )
+
+    def test_probability_conservation_with_productive_outs(self):
+        """All probability must sum to 1.0 with productive outs and GIDP active."""
+        rates = _make_rates(
+            k=0.20, bb=0.08, hbp=0.01,
+            single=0.15, double=0.05, triple=0.005, hr=0.03,
+        )
+        rates['out_in_play'] = 1.0 - sum(
+            rates[k] for k in ['k', 'bb', 'hbp', 'single', 'double', 'triple', 'hr']
+        )
+        result = compute_p_zero_runs([rates] * 9, max_batters=9)
+        assert 0.0 <= result <= 1.0, f"Result outside [0, 1]: {result}"
+
+        # Also test with high-contact rates that trigger many base states
+        high_contact = _make_rates(
+            k=0.10, bb=0.12, hbp=0.02,
+            single=0.20, double=0.08, triple=0.01, hr=0.04,
+        )
+        high_contact['out_in_play'] = 1.0 - sum(
+            high_contact[k] for k in ['k', 'bb', 'hbp', 'single', 'double', 'triple', 'hr']
+        )
+        result2 = compute_p_zero_runs([high_contact] * 9, max_batters=9)
+        assert 0.0 <= result2 <= 1.0, f"Result outside [0, 1]: {result2}"

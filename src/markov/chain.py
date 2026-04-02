@@ -30,6 +30,7 @@ STATE_ABSORB_ZERO = 24  # 3 outs, 0 runs
 STATE_ABSORB_SCORED = 25  # 3 outs, ≥1 run
 
 GIDP_FRACTION = 0.12  # ~12% of out-in-play with runner on 1st and < 2 outs
+PRODUCTIVE_OUT_FRACTION = 0.20  # ~20% of out-in-play with runner on 3rd and < 2 outs
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +271,17 @@ def _gidp_result(config: int, outs: int) -> tuple:
     return new_config, new_outs
 
 
+def _productive_out_result(config: int) -> tuple:
+    """
+    Result of a productive out (sac fly/groundout scoring runner from 3rd).
+    Returns (new_base_config, runs_scored).
+    Runner on 3rd scores; other runners stay. Outs handled by caller.
+    """
+    on_1st, on_2nd, _ = _runners_on(config)
+    new_config = _config_from_runners(on_1st, on_2nd, False)
+    return new_config, 1
+
+
 # ---------------------------------------------------------------------------
 # Core engine
 # ---------------------------------------------------------------------------
@@ -343,23 +355,43 @@ def compute_p_zero_runs(
                 )
             )
 
-            # --- Out in play (with GIDP split) ---
+            # --- Out in play (with productive out + GIDP splits) ---
             oip_rate = rates['out_in_play']
-            if _can_gidp(config, outs):
-                gidp_rate = oip_rate * GIDP_FRACTION
-                regular_out_rate = oip_rate * (1 - GIDP_FRACTION)
+            on_1st, _, on_3rd = _runners_on(config)
+            apply_sac = on_3rd and outs < 2
+            # Loaded (config 7) excluded from GIDP — DP usually scores a run
+            apply_gidp = on_1st and outs < 2 and config != 7
 
-                # Regular out portion
+            if apply_sac and apply_gidp:
+                # runners_1st_3rd (config 5): sac fly 20%, then GIDP
+                # within remaining 80%
+                sac_rate = oip_rate * PRODUCTIVE_OUT_FRACTION
+                remaining = oip_rate * (1 - PRODUCTIVE_OUT_FRACTION)
+                gidp_rate = remaining * GIDP_FRACTION
+                regular_rate = remaining * (1 - GIDP_FRACTION)
+
+                # Regular out: runners stay, outs += 1
                 new_absorb_zero, new_absorb_scored = (
                     _apply_out_event_ret(
-                        regular_out_rate, config, outs, 0,
+                        regular_rate, config, outs, 0,
                         prob_z, prob_s,
                         new_zero, new_scored,
                         new_absorb_zero, new_absorb_scored,
                     )
                 )
 
-                # GIDP portion: 2 outs, remove lead runner
+                # Productive out: runner on 3rd scores, outs += 1
+                prod_config, prod_runs = _productive_out_result(config)
+                new_absorb_zero, new_absorb_scored = (
+                    _apply_out_event_ret(
+                        sac_rate, prod_config, outs, prod_runs,
+                        prob_z, prob_s,
+                        new_zero, new_scored,
+                        new_absorb_zero, new_absorb_scored,
+                    )
+                )
+
+                # GIDP: outs += 2, runner on 1st removed
                 gdp_config, gdp_outs = _gidp_result(config, outs)
                 if gdp_outs >= 3:
                     new_absorb_zero += prob_z * gidp_rate
@@ -368,7 +400,60 @@ def compute_p_zero_runs(
                     dest = state_index(gdp_config, gdp_outs)
                     new_zero[dest] += prob_z * gidp_rate
                     new_scored[dest] += prob_s * gidp_rate
+
+            elif apply_sac:
+                # Runner on 3rd, no GIDP (configs 3, 6, 7)
+                sac_rate = oip_rate * PRODUCTIVE_OUT_FRACTION
+                regular_rate = oip_rate * (1 - PRODUCTIVE_OUT_FRACTION)
+
+                # Regular out
+                new_absorb_zero, new_absorb_scored = (
+                    _apply_out_event_ret(
+                        regular_rate, config, outs, 0,
+                        prob_z, prob_s,
+                        new_zero, new_scored,
+                        new_absorb_zero, new_absorb_scored,
+                    )
+                )
+
+                # Productive out
+                prod_config, prod_runs = _productive_out_result(config)
+                new_absorb_zero, new_absorb_scored = (
+                    _apply_out_event_ret(
+                        sac_rate, prod_config, outs, prod_runs,
+                        prob_z, prob_s,
+                        new_zero, new_scored,
+                        new_absorb_zero, new_absorb_scored,
+                    )
+                )
+
+            elif apply_gidp:
+                # Runner on 1st, no sac fly (configs 1, 4)
+                gidp_rate = oip_rate * GIDP_FRACTION
+                regular_rate = oip_rate * (1 - GIDP_FRACTION)
+
+                # Regular out
+                new_absorb_zero, new_absorb_scored = (
+                    _apply_out_event_ret(
+                        regular_rate, config, outs, 0,
+                        prob_z, prob_s,
+                        new_zero, new_scored,
+                        new_absorb_zero, new_absorb_scored,
+                    )
+                )
+
+                # GIDP: 2 outs, remove lead runner
+                gdp_config, gdp_outs = _gidp_result(config, outs)
+                if gdp_outs >= 3:
+                    new_absorb_zero += prob_z * gidp_rate
+                    new_absorb_scored += prob_s * gidp_rate
+                else:
+                    dest = state_index(gdp_config, gdp_outs)
+                    new_zero[dest] += prob_z * gidp_rate
+                    new_scored[dest] += prob_s * gidp_rate
+
             else:
+                # No special splits (empty, runner_2nd, or outs == 2)
                 new_absorb_zero, new_absorb_scored = (
                     _apply_out_event_ret(
                         oip_rate, config, outs, 0,

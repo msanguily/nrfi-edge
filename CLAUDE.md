@@ -13,13 +13,13 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 ## Current Status
 - [x] Supabase schema (14 tables) migrated
 - [x] Reference data seeded (teams, parks, league_averages, baserunner_advancement)
-- [ ] Historical games 2019-2025 (Step 1.3) — IN PROGRESS
-- [ ] Historical player stats (Step 1.4)
+- [x] Historical games 2019-2025 (Step 1.3) — 15,431 games seeded
+- [x] Historical player stats (Step 1.4) — 1,770 pitcher-seasons, 3,519 batter-seasons
 - [ ] Platoon splits (Step 1.5)
 - [ ] First-inning pitcher stats (Step 1.6)
-- [ ] Odds Ratio module (Step 2.1)
-- [ ] Markov chain engine (Step 2.2)
-- [ ] Environmental adjustments (Step 2.3)
+- [x] Odds Ratio module (Step 2.1)
+- [x] Markov chain engine (Step 2.2)
+- [x] Environmental adjustments (Step 2.3)
 - [ ] Prediction pipeline (Step 2.4)
 - [ ] Backtesting (Phase 3)
 - [ ] Live pipeline (Phase 4)

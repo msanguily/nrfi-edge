@@ -22,47 +22,51 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - [x] Platoon splits — 10,479 rows seeded across 2019-2025 (Step 1.5)
 - [x] First-inning pitcher stats — 2,547 pitcher-season rows across 2019-2025 (Step 1.6)
 - [x] Historical lineups — 277,758 rows seeded from boxscore API (Step 1.7)
+- [x] Historical weather — 15,431 snapshots seeded from MLB API (100% coverage)
 
 ### Phase 2: Core Engine
 - [x] Odds Ratio module — code built, tests pass (Step 2.1)
 - [x] Markov chain engine — code built with productive outs + GIDP, tests pass (Step 2.2)
 - [x] Environmental adjustments — code built, tests pass (Step 2.3)
 - [x] First-inning rate adjustments — data-driven multipliers applied (Step 2.5)
-- [x] Prediction pipeline — code built, tests pass (Step 2.4)
+- [x] Prediction pipeline — code built with calibrator + first-inning adj, tests pass (Step 2.4)
 
 ### Phase 3: Backtesting
-- [x] Backtest v0.2.0 — 15,409 games predicted (99.9% coverage)
-- [x] First-inning adjustments reduced raw bias from +5.4% to -0.3%
+- [x] Backtest v0.2.0 — first-inning adjustments reduced raw bias from +5.4% to -0.3%
+- [x] Backtest v0.3.0 — weather adjustments (temperature + wind) applied to all 15,431 games
 - [x] Isotonic calibrator trained on 2019-2024, tested on 2025
 
-**Backtest Results (v0.2.0-first-inning-adj):**
+**Backtest Results (v0.3.0-weather):**
 
-| Metric | v0.1.0 (old) | v0.2.0 (new) | Change |
-|--------|-------------|-------------|--------|
-| Mean Prediction (actual: 0.503) | 0.5572 | 0.5000 | -0.057 (bias eliminated) |
-| Brier Score (all) | 0.2531 | 0.2505 | -0.003 (improved) |
-| Brier Skill (all) | -0.0124 | -0.0021 | +0.010 (5.9x closer to positive) |
-| ECE (all) | 0.0591 | 0.0329 | -0.026 (44% less miscalibration) |
-| Prediction std | 0.0834 | 0.0884 | +0.005 (wider spread) |
-| 2025 Calibrated Brier | 0.2487 | 0.2488 | ~same |
-| 2025 Calibrated ECE | 0.0053 | 0.0082 | ~same |
-| 2025 Calibrated Brier Skill | +0.0053 | +0.0047 | ~same |
+| Metric | v0.2.0 (no weather) | v0.3.0 (weather) | Change |
+|--------|--------------------|--------------------|--------|
+| Mean Prediction (actual: 0.503) | 0.5000 | 0.4984 | -0.002 |
+| Brier Score (all) | 0.2505 | 0.2504 | -0.0001 (improved) |
+| Brier Skill (all) | -0.0021 | -0.0016 | +0.0005 (improved) |
+| ECE (all) | 0.0329 | 0.0328 | -0.0001 (improved) |
+| Prediction std | 0.0884 | 0.0891 | +0.0007 (wider spread) |
+| 2025 Cal. Brier | 0.2488 | 0.2487 | -0.0001 (improved) |
+| 2025 Cal. Brier Skill | +0.0047 | +0.0052 | +0.0005 (improved) |
 
 **High-Confidence (calibrated, all games):**
-- P(NRFI) > 0.54: 4,034 games → actual 56.6%
-- P(NRFI) > 0.56: 1,609 games → actual 58.7%
-- P(NRFI) > 0.58: 1,531 games → actual 58.9%
-- P(NRFI) > 0.60: 134 games → actual 63.4%
+- P(NRFI) > 0.54: 3,632 games → actual 56.9%
+- P(NRFI) > 0.56: 1,718 games → actual 58.5%
+- P(NRFI) > 0.58: 1,359 games → actual 58.9%
+- P(NRFI) > 0.60: 103 games → actual 64.1%
+
+**High-Confidence (2025 out-of-sample):**
+- P(NRFI) > 0.54: 455 games → actual 56.0%
+- P(NRFI) > 0.56: 164 games → actual 56.1%
+- P(NRFI) > 0.58: 125 games → actual 56.8%
 
 ### Phase 4
 - [ ] Live pipeline
 
 ## Next Steps
-1. Wire isotonic calibrator into live prediction pipeline (`predict.py:413` TODO)
-2. Seed historical weather data and apply full adjustments in backtest
-3. Apply Marcel shrinkage to platoon split rates (currently unshrunk)
-4. Seed umpire data for umpire zone adjustments
-5. Investigate further discrimination improvements
+1. Apply Marcel shrinkage to platoon split rates (currently unshrunk)
+2. Seed umpire data for umpire zone adjustments
+3. Investigate further discrimination improvements
+4. Build live daily pipeline (Phase 4)
 
 ## Key Files
 - `docs/STRATEGY.md` — Full mathematical framework, formulas, corrections, and detailed reasoning. READ THIS before building any core engine component.

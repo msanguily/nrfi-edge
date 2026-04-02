@@ -43,7 +43,7 @@ SB_HEADERS = {
 
 OUTCOME_KEYS = ['k', 'bb', 'hbp', 'single', 'double', 'triple', 'hr']
 BF_PER_IP = 4.3
-MODEL_VERSION = '0.2.0-first-inning-adj'
+MODEL_VERSION = '0.3.0-weather'
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -90,6 +90,7 @@ def load_all_data():
         ("platoon_splits", {}),
         ("parks", {}),
         ("league_averages", {}),
+        ("weather_snapshots", {}),
     ]
 
     for table_name, params in tables:
@@ -146,6 +147,9 @@ def build_indexes(data):
 
     # League averages by season
     idx['league_averages'] = {r['season']: r for r in data['league_averages']}
+
+    # Weather by game_pk
+    idx['weather'] = {w['game_pk']: w for w in data.get('weather_snapshots', [])}
 
     return idx
 
@@ -271,7 +275,18 @@ def predict_game(game, idx):
     # Park factor
     park = idx['parks'].get(park_id, {})
     park_hr_factor = float(park.get('hr_factor', 100) or 100)
-    is_indoor = bool(park.get('is_dome') or park.get('is_retractable_roof'))
+
+    # Weather data
+    weather = idx['weather'].get(game_pk, {})
+    is_dome_closed = bool(weather.get('is_dome_closed'))
+    if is_dome_closed:
+        temperature_f = 75.0  # neutral for dome games
+        wind_speed_mph = 0.0
+        wind_relative = 'calm'
+    else:
+        temperature_f = float(weather.get('temperature_f') or 75.0)
+        wind_speed_mph = float(weather.get('wind_speed_mph') or 0.0)
+        wind_relative = weather.get('wind_relative') or 'calm'
 
     # Pitcher handedness
     home_pitcher_info = idx['players'].get(home_pitcher_id, {})
@@ -282,7 +297,8 @@ def predict_game(game, idx):
     # --- Top of 1st: away batters vs home pitcher ---
     away_rates = build_half_inning_rates(
         away_lineup, home_pitcher_id, home_pitcher_hand,
-        season, league_rates, park_hr_factor, idx,
+        season, league_rates, park_hr_factor,
+        temperature_f, wind_speed_mph, wind_relative, idx,
     )
     if away_rates is None:
         return None
@@ -292,7 +308,8 @@ def predict_game(game, idx):
     # --- Bottom of 1st: home batters vs away pitcher ---
     home_rates = build_half_inning_rates(
         home_lineup, away_pitcher_id, away_pitcher_hand,
-        season, league_rates, park_hr_factor, idx,
+        season, league_rates, park_hr_factor,
+        temperature_f, wind_speed_mph, wind_relative, idx,
     )
     if home_rates is None:
         return None
@@ -317,7 +334,8 @@ def predict_game(game, idx):
 
 
 def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
-                            league_rates, park_hr_factor, idx):
+                            league_rates, park_hr_factor,
+                            temperature_f, wind_speed_mph, wind_relative, idx):
     """
     Build adjusted matchup rates for each batter in a lineup.
     Returns list of rate dicts, or None if pitcher has no stats.
@@ -361,8 +379,14 @@ def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
         # First-inning adjustment (data-driven multipliers)
         fi_adjusted = adjust_for_first_inning(matchup)
 
-        # Environmental adjustments (park factor only for backtest)
-        adjusted = apply_all_adjustments(fi_adjusted, park_hr_factor=park_hr_factor)
+        # Environmental adjustments (park + weather)
+        adjusted = apply_all_adjustments(
+            fi_adjusted,
+            park_hr_factor=park_hr_factor,
+            temperature_f=temperature_f,
+            wind_speed_mph=wind_speed_mph,
+            wind_relative=wind_relative,
+        )
         batter_matchup_list.append(adjusted)
 
     return batter_matchup_list
@@ -734,11 +758,18 @@ def store_predictions(results, calibrator):
             'result': r['nrfi_result'],
         })
 
-    # Batch upsert in chunks of 200
+    # Batch upsert in chunks of 200 (on_conflict on game_pk + prediction_type)
     upsert_headers = {
         **SB_HEADERS,
         "Prefer": "resolution=merge-duplicates,return=minimal",
     }
+    # Delete old backtest predictions first to avoid 409 conflicts
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/predictions",
+        headers=SB_HEADERS,
+        params={"prediction_type": "eq.confirmed", "model_version": f"neq.{MODEL_VERSION}"},
+        timeout=30,
+    )
     total = len(rows)
     for i in range(0, total, 200):
         batch = rows[i:i+200]

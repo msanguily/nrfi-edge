@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Seed first-inning pitcher stats from MLB play-by-play data (Step 1.6).
 
-For each game in the games table, fetches play-by-play from the MLB Stats API,
-parses first-inning events, and updates pitcher_stats with aggregated first-inning
-stats (K, BB, H, HBP, HR, BF, pitches, starts, scoreless, runs).
+For each completed regular-season game, fetches play-by-play from the MLB Stats
+API, identifies the ACTUAL first-inning pitcher (not trusting the games table),
+parses first-inning events, and updates pitcher_stats with aggregated stats.
 
-Runs are NOT re-derived from play-by-play — they come from the linescore data
-already in the games table (first_inn_away_runs, first_inn_home_runs).
+Runs come from the linescore already in the games table (first_inn_away_runs,
+first_inn_home_runs), NOT re-derived from play-by-play.
 """
 
 import requests
@@ -24,51 +24,34 @@ SUPABASE_KEY = (
 
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
 
-UPSERT_HEADERS = {
+HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
+}
+
+UPSERT_HEADERS = {
+    **HEADERS,
     "Content-Type": "application/json",
     "Prefer": "resolution=merge-duplicates,return=minimal",
 }
-
-# ---------------------------------------------------------------------------
-# Event classification
-# ---------------------------------------------------------------------------
-STRIKEOUT_EVENTS = {"Strikeout", "Strikeout - DP", "Strikeout - TP"}
-WALK_EVENTS = {"Walk", "Intent Walk"}
-HBP_EVENTS = {"Hit By Pitch"}
-SINGLE_EVENTS = {"Single"}
-DOUBLE_EVENTS = {"Double"}
-TRIPLE_EVENTS = {"Triple"}
-HR_EVENTS = {"Home Run"}
-
-# Non-PA event prefixes — do NOT count as batters faced.
-# MLB API uses variants like "Caught Stealing 2B", "Stolen Base 3B", etc.
-NON_PA_PREFIXES = (
-    "Stolen Base", "Caught Stealing", "Pickoff", "Wild Pitch",
-    "Passed Ball", "Balk", "Runner Out",
-)
 
 
 # ---------------------------------------------------------------------------
 # Supabase helpers
 # ---------------------------------------------------------------------------
 def fetch_all_games():
-    """Fetch all final games with pitchers and first-inning linescore."""
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-    }
+    """Fetch all final regular-season games with first-inning linescore."""
     all_games = []
     offset = 0
     while True:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/games",
-            headers=headers,
+            headers=HEADERS,
             params={
                 "select": "game_pk,game_date,home_pitcher_id,away_pitcher_id,"
                           "first_inn_away_runs,first_inn_home_runs",
                 "status": "eq.final",
+                "game_type": "eq.regular",
                 "order": "game_date.asc",
                 "limit": 1000,
                 "offset": offset,
@@ -136,16 +119,41 @@ def fetch_play_by_play(game_pk):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Play-by-play parsing
+# ---------------------------------------------------------------------------
+def identify_first_inning_pitcher(pbp_data, half_inning):
+    """Find the FIRST pitcher who appears in a given half-inning from play-by-play.
+
+    Returns (pitcher_id, pitcher_name) or (None, None) if no plays found.
+    """
+    for play in pbp_data.get("allPlays", []):
+        about = play.get("about", {})
+        if about.get("inning") != 1:
+            continue
+        if about.get("halfInning") != half_inning:
+            continue
+
+        matchup = play.get("matchup", {})
+        pitcher = matchup.get("pitcher", {})
+        pid = pitcher.get("id")
+        pname = pitcher.get("fullName", "Unknown")
+        if pid:
+            return pid, pname
+
+    return None, None
+
+
 def parse_first_inning(pbp_data, pitcher_id, half_inning):
     """Extract first-inning PA stats for a specific pitcher in a specific half.
 
-    Args:
-        pbp_data: Full play-by-play JSON response.
-        pitcher_id: MLB player ID of the starting pitcher.
-        half_inning: "top" (home pitcher) or "bottom" (away pitcher).
+    Only counts plays where matchup.pitcher.id == pitcher_id, so mid-inning
+    pitching changes are handled correctly.
 
-    Returns:
-        dict with batters_faced, strikeouts, walks, hits, hr, hbp, pitches.
+    Uses result.eventType (snake_case) for classification, which is more
+    consistent than result.event (title case).
+
+    Returns dict with batters_faced, strikeouts, walks, hits, hr, hbp, pitches.
     """
     stats = {
         "batters_faced": 0,
@@ -155,6 +163,7 @@ def parse_first_inning(pbp_data, pitcher_id, half_inning):
         "hr": 0,
         "hbp": 0,
         "pitches": 0,
+        "pitches_available": True,
     }
 
     for play in pbp_data.get("allPlays", []):
@@ -170,30 +179,41 @@ def parse_first_inning(pbp_data, pitcher_id, half_inning):
             continue
 
         result = play.get("result", {})
-        event = result.get("event", "")
 
-        # Skip non-PA events (stolen bases, pickoffs, etc.)
-        if event.startswith(NON_PA_PREFIXES):
-            continue
         # Only count completed plate appearances
         if result.get("type") != "atBat":
             continue
 
         stats["batters_faced"] += 1
-        stats["pitches"] += len(play.get("pitchIndex", []))
 
-        if event in STRIKEOUT_EVENTS:
+        # Count pitches from playEvents where type == 'pitch'
+        play_events = play.get("playEvents", [])
+        if play_events:
+            pitch_count = sum(
+                1 for ev in play_events if ev.get("type") == "pitch"
+            )
+            stats["pitches"] += pitch_count
+        else:
+            # playEvents missing — mark pitches as unavailable
+            stats["pitches_available"] = False
+
+        # Classify by eventType (snake_case, more consistent)
+        event_type = result.get("eventType", "")
+
+        if "strikeout" in event_type:
             stats["strikeouts"] += 1
-        elif event in WALK_EVENTS:
+        elif event_type in ("walk", "intent_walk"):
             stats["walks"] += 1
-        elif event in HBP_EVENTS:
+        elif event_type == "hit_by_pitch":
             stats["hbp"] += 1
-        elif event in HR_EVENTS:
+        elif event_type == "home_run":
             stats["hits"] += 1
             stats["hr"] += 1
-        elif event in SINGLE_EVENTS or event in DOUBLE_EVENTS or event in TRIPLE_EVENTS:
+        elif event_type in ("single", "double", "triple"):
             stats["hits"] += 1
-        # All other atBat events (outs, FC, errors, sac) just count as BF
+        # All other atBat events (field_out, grounded_into_double_play,
+        # fielders_choice, sac_fly, sac_bunt, field_error, etc.)
+        # just count toward batters_faced.
 
     return stats
 
@@ -204,29 +224,29 @@ def parse_first_inning(pbp_data, pitcher_id, half_inning):
 def main():
     print("Loading games from Supabase ...", end=" ", flush=True)
     games = fetch_all_games()
-    print(f"{len(games)} total", flush=True)
+    print(f"{len(games)} regular-season final games", flush=True)
 
-    # Keep only games with both pitchers and first-inning linescore
+    # Keep only games with first-inning linescore data
     games = [
         g for g in games
-        if g["home_pitcher_id"] and g["away_pitcher_id"]
-        and g["first_inn_away_runs"] is not None
+        if g["first_inn_away_runs"] is not None
         and g["first_inn_home_runs"] is not None
     ]
-    print(f"  {len(games)} usable (both pitchers + first-inning runs)", flush=True)
+    print(f"  {len(games)} with first-inning linescore data", flush=True)
 
-    # Group by season (year from game_date)
+    # Group by season
     by_season = defaultdict(list)
     for g in games:
         by_season[int(g["game_date"][:4])].append(g)
 
     grand_total = 0
+    skipped_games = []
 
     for season in sorted(by_season):
         sg = by_season[season]
-        print(f"\n{'='*55}")
+        print(f"\n{'='*60}")
         print(f"  SEASON {season}  ({len(sg)} games)")
-        print(f"{'='*55}")
+        print(f"{'='*60}")
 
         # Accumulate: pitcher_id -> first_inn_* totals
         agg = defaultdict(lambda: {
@@ -240,32 +260,50 @@ def main():
             "first_inn_hbp": 0,
             "first_inn_batters_faced": 0,
             "first_inn_pitches": 0,
+            "pitches_available": True,
         })
+
+        # Track pitcher names for player inserts
+        pitcher_names = {}
 
         processed = 0
         errors = 0
 
         for i, game in enumerate(sg):
             pbp = fetch_play_by_play(game["game_pk"])
-            if pbp is None:
+            if pbp is None or not pbp.get("allPlays"):
                 errors += 1
-                if (i + 1) % 200 == 0:
-                    print(f"  {i+1}/{len(sg)} (errors={errors})", flush=True)
-                time.sleep(0.25)
+                skipped_games.append(game["game_pk"])
+                if (i + 1) % 500 == 0:
+                    print(
+                        f"  Processed {i+1}/{len(sg)} games for season {season} "
+                        f"(errors={errors})",
+                        flush=True,
+                    )
+                time.sleep(0.3)
                 continue
 
-            # Home pitcher pitches top of 1st; away pitcher pitches bottom of 1st
-            for side, half, runs_col in [
-                ("home", "top", "first_inn_away_runs"),
-                ("away", "bottom", "first_inn_home_runs"),
+            # Top of 1st: identify the actual pitcher (usually home starter)
+            # Bottom of 1st: identify the actual pitcher (usually away starter)
+            #
+            # CRITICAL MAPPING:
+            #   Top-of-1st pitcher ALLOWED first_inn_away_runs (away team batting)
+            #   Bottom-of-1st pitcher ALLOWED first_inn_home_runs (home team batting)
+            for half, runs_col in [
+                ("top", "first_inn_away_runs"),
+                ("bottom", "first_inn_home_runs"),
             ]:
-                pid = game[f"{side}_pitcher_id"]
-                runs = game[runs_col]
+                pid, pname = identify_first_inning_pitcher(pbp, half)
+                if pid is None:
+                    continue
+
+                pitcher_names[pid] = pname
 
                 ps = parse_first_inning(pbp, pid, half)
                 if ps["batters_faced"] == 0:
-                    continue  # pitcher didn't record any PAs (last-minute change?)
+                    continue
 
+                runs = game[runs_col]
                 a = agg[pid]
                 a["first_inn_starts"] += 1
                 a["first_inn_runs"] += runs
@@ -278,23 +316,73 @@ def main():
                 a["first_inn_hbp"] += ps["hbp"]
                 a["first_inn_batters_faced"] += ps["batters_faced"]
                 a["first_inn_pitches"] += ps["pitches"]
+                if not ps["pitches_available"]:
+                    a["pitches_available"] = False
 
             processed += 1
-            if (i + 1) % 200 == 0:
-                print(f"  {i+1}/{len(sg)} (errors={errors})", flush=True)
+            if (i + 1) % 500 == 0:
+                print(
+                    f"  Processed {i+1}/{len(sg)} games for season {season} "
+                    f"(errors={errors})",
+                    flush=True,
+                )
 
-            time.sleep(0.25)
+            time.sleep(0.3)
 
-        print(f"  Done: {processed} games, {errors} errors, {len(agg)} pitchers")
+        print(
+            f"  Done: {processed} games processed, {errors} errors, "
+            f"{len(agg)} pitchers found",
+            flush=True,
+        )
 
-        # Build upsert rows
+        # --- Ensure all pitchers exist in players table ---
+        player_rows = []
+        for pid, pname in pitcher_names.items():
+            if pid in agg:  # only insert if they have stats
+                player_rows.append({
+                    "mlb_player_id": pid,
+                    "name": pname,
+                    "position": "P",
+                })
+
+        if player_rows:
+            print(
+                f"  Ensuring {len(player_rows)} pitchers exist in players ...",
+                end=" ",
+                flush=True,
+            )
+            sb_upsert("players", player_rows, on_conflict="mlb_player_id")
+            print("done", flush=True)
+
+        # --- Build pitcher_stats upsert rows ---
         rows = []
         for pid, stats in agg.items():
-            row = {"mlb_player_id": pid, "season": season}
-            row.update(stats)
+            row = {
+                "mlb_player_id": pid,
+                "season": season,
+                "first_inn_starts": stats["first_inn_starts"],
+                "first_inn_scoreless": stats["first_inn_scoreless"],
+                "first_inn_runs": stats["first_inn_runs"],
+                "first_inn_hits": stats["first_inn_hits"],
+                "first_inn_walks": stats["first_inn_walks"],
+                "first_inn_strikeouts": stats["first_inn_strikeouts"],
+                "first_inn_hr": stats["first_inn_hr"],
+                "first_inn_hbp": stats["first_inn_hbp"],
+                "first_inn_batters_faced": stats["first_inn_batters_faced"],
+            }
+            # Only set pitches if data was available for ALL appearances
+            if stats["pitches_available"]:
+                row["first_inn_pitches"] = stats["first_inn_pitches"]
+            else:
+                row["first_inn_pitches"] = None
+
             rows.append(row)
 
-        print(f"  Upserting {len(rows)} pitcher-season rows ...", end=" ", flush=True)
+        print(
+            f"  Upserting {len(rows)} pitcher-season rows ...",
+            end=" ",
+            flush=True,
+        )
         sb_upsert("pitcher_stats", rows, on_conflict="mlb_player_id,season")
         print("done", flush=True)
 
@@ -307,14 +395,17 @@ def main():
         rate = tot_scoreless / tot_starts if tot_starts else 0
         k_per_bf = tot_k / tot_bf if tot_bf else 0
         h_per_bf = tot_h / tot_bf if tot_bf else 0
-        print(f"  >> {tot_starts} pitcher-starts | scoreless {tot_scoreless}/{tot_starts} = {rate:.3f}")
+        print(f"  >> {tot_starts} pitcher-starts | scoreless rate: "
+              f"{tot_scoreless}/{tot_starts} = {rate:.3f}")
         print(f"  >> {tot_bf} BF | K/BF {k_per_bf:.3f} | H/BF {h_per_bf:.3f}")
 
         grand_total += len(agg)
 
-    print(f"\n{'='*55}")
+    print(f"\n{'='*60}")
     print(f"  COMPLETE — {grand_total} pitcher-season rows updated")
-    print(f"{'='*55}")
+    if skipped_games:
+        print(f"  {len(skipped_games)} games skipped (no play-by-play)")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":

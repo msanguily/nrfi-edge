@@ -1,0 +1,51 @@
+-- 002: Season-level pitcher and batter stats
+
+CREATE TABLE pitcher_stats (
+    id SERIAL PRIMARY KEY,
+    mlb_player_id INTEGER REFERENCES players(mlb_player_id) NOT NULL,
+    season INTEGER NOT NULL,
+    games_started INTEGER DEFAULT 0,
+    innings_pitched NUMERIC(5,1),
+    era NUMERIC(5,2),
+    fip NUMERIC(5,2),
+    whip NUMERIC(5,3),
+    k_rate NUMERIC(5,3),
+    bb_rate NUMERIC(5,3),
+    hbp_rate NUMERIC(5,4),
+    hr_rate NUMERIC(5,4),
+    single_rate NUMERIC(5,3),
+    double_rate NUMERIC(5,3),
+    triple_rate NUMERIC(5,4),
+    gb_rate NUMERIC(5,3),
+    first_inn_starts INTEGER DEFAULT 0,
+    first_inn_scoreless INTEGER DEFAULT 0,
+    first_inn_runs INTEGER DEFAULT 0,
+    first_inn_hits INTEGER DEFAULT 0,
+    first_inn_walks INTEGER DEFAULT 0,
+    first_inn_strikeouts INTEGER DEFAULT 0,
+    first_inn_hr INTEGER DEFAULT 0,
+    first_inn_hbp INTEGER DEFAULT 0,
+    first_inn_batters_faced INTEGER DEFAULT 0,
+    first_inn_pitches INTEGER DEFAULT 0,
+    UNIQUE(mlb_player_id, season)
+);
+
+CREATE TABLE batter_stats (
+    id SERIAL PRIMARY KEY,
+    mlb_player_id INTEGER REFERENCES players(mlb_player_id) NOT NULL,
+    season INTEGER NOT NULL,
+    pa INTEGER DEFAULT 0,
+    avg NUMERIC(4,3),
+    obp NUMERIC(4,3),
+    slg NUMERIC(5,3),
+    woba NUMERIC(4,3),
+    xwoba NUMERIC(4,3),
+    k_rate NUMERIC(5,3),
+    bb_rate NUMERIC(5,3),
+    hr_rate NUMERIC(5,4),
+    single_rate NUMERIC(5,3),
+    double_rate NUMERIC(5,3),
+    triple_rate NUMERIC(5,4),
+    hbp_rate NUMERIC(5,4),
+    UNIQUE(mlb_player_id, season)
+);

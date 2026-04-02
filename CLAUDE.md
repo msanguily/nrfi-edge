@@ -57,6 +57,7 @@ Connection via .env (SUPABASE_URL, SUPABASE_SERVICE_KEY). Also configured via Su
 4. Humidity is neutral (air density decrease offset by ball moisture absorption). Do not treat as offense-boosting.
 5. Never use full Kelly. 1/6 fractional Kelly, capped at 2% of bankroll.
 6. Phase 3 backtesting must show +EV before proceeding to live betting.
+7. **NRFI base rate is ~50%, not ~70%.** Per-half-inning scoreless rate is ~71% (away ~73%, home ~69%). Full-game NRFI (both halves scoreless) is ~50%. Many published sources report the per-team figure; do not confuse with the full-game rate.
 
 ## Tech Stack
 Python, Supabase (Postgres), pybaseball, MLB Stats API (free), The Odds API, Tomorrow.io, Slack webhooks. Deployed on Mac Mini via cron.

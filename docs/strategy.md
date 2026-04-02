@@ -168,6 +168,14 @@ Original assumption was wrong. The physics and baseball reality:
 - April NRFI rates run 3-5% higher than mid-season (pitchers fresh, hitters still finding timing, cold weather in northern parks)
 - Apply a seasonal adjustment factor, calibrated from historical data
 
+### 3.10 NRFI Base Rates (Critical Reference)
+
+- **Per-half-inning scoreless rate**: ~71% (away ~73%, home ~69%). This is the rate that ONE team scores 0 in the 1st.
+- **Full-game NRFI rate (both halves scoreless)**: ~50% (2019-2025 average: 50.3%). This is what the NRFI bet covers.
+- The relationship: P(NRFI) = P(away 0) x P(home 0) ≈ 0.73 x 0.69 ≈ 0.50.
+- Many published sources (TeamRankings, etc.) report the per-team ~70% figure. Do not confuse this with the full-game NRFI rate.
+- Typical sportsbook NRFI line: -120 to -140, implying ~54-58% (includes vig).
+
 ## 4. Features That Matter (Ranked by Signal Strength)
 
 Based on research and existing model literature:

@@ -29,17 +29,24 @@ def _request(url: str, params: Optional[Dict] = None) -> Optional[Dict]:
     return None
 
 
-def get_todays_games() -> Optional[List[Dict]]:
-    """Fetch today's MLB schedule with probable pitchers and linescores.
+def get_games_for_date(game_date: str) -> Optional[List[Dict]]:
+    """Fetch MLB schedule for a specific date with probable pitchers.
+
+    Args:
+        game_date: Date string in YYYY-MM-DD format.
 
     Returns list of dicts with: game_pk, game_date, game_time_utc,
     home_team_id, away_team_id, home_pitcher_id, away_pitcher_id,
-    status, is_day_game. Returns None on API failure.
+    home_pitcher_name, away_pitcher_name, venue_id,
+    status, game_type, is_day_game. Returns None on API failure.
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     data = _request(
         f"{BASE_URL}/schedule",
-        params={"sportId": 1, "date": today, "hydrate": "probablePitcher,linescore"},
+        params={
+            "sportId": 1,
+            "date": game_date,
+            "hydrate": "probablePitcher,venue",
+        },
     )
     if data is None:
         return None
@@ -63,18 +70,41 @@ def get_todays_games() -> Optional[List[Dict]]:
                 except (ValueError, AttributeError):
                     pass
 
+            # Game type: R=regular, S=spring, P=postseason, etc.
+            raw_type = g.get("gameType", "R")
+            game_type = {
+                "R": "regular", "S": "spring", "E": "exhibition",
+                "A": "allstar", "D": "division", "L": "league",
+                "W": "worldseries", "F": "wildcard",
+            }.get(raw_type, raw_type)
+
+            venue = g.get("venue", {})
+
             games.append({
                 "game_pk": g.get("gamePk"),
-                "game_date": today,
+                "game_date": game_date,
                 "game_time_utc": game_time,
                 "home_team_id": home.get("team", {}).get("id"),
                 "away_team_id": away.get("team", {}).get("id"),
                 "home_pitcher_id": home_pitcher.get("id"),
                 "away_pitcher_id": away_pitcher.get("id"),
+                "home_pitcher_name": home_pitcher.get("fullName"),
+                "away_pitcher_name": away_pitcher.get("fullName"),
+                "venue_id": venue.get("id"),
                 "status": g.get("status", {}).get("detailedState"),
+                "game_type": game_type,
                 "is_day_game": is_day,
             })
     return games
+
+
+def get_todays_games() -> Optional[List[Dict]]:
+    """Fetch today's MLB schedule with probable pitchers.
+
+    Returns list of dicts with game info. Returns None on API failure.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return get_games_for_date(today)
 
 
 def get_confirmed_lineups(game_pk: int) -> Optional[Dict]:

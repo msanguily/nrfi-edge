@@ -59,23 +59,34 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - P(NRFI) > 0.56: 164 games → actual 56.1%
 - P(NRFI) > 0.58: 125 games → actual 56.8%
 
-### Phase 4
-- [ ] Live pipeline
+### Phase 4: Live Pipeline & Dashboard
+- [x] Odds API client (SportsGameOdds) — fetches NRFI/YRFI lines, vig removal, tests pass
+- [x] Weather forecast API (Tomorrow.io) — pre-game forecasts, dome detection, tests pass
+- [x] Isotonic calibrator wired into prediction pipeline (loaded from config/calibrator.json)
+- [x] First-inning adjustments wired into prediction pipeline (matches backtest ordering)
+- [x] Streamlit dashboard — today's picks, model performance, bet history
+- [x] Weather seeding script for historical data (scripts/seed_weather.py)
+- [ ] Daily orchestration cron job
+- [ ] Slack alerts for +EV picks
 
 ## Next Steps
 1. Apply Marcel shrinkage to platoon split rates (currently unshrunk)
 2. Seed umpire data for umpire zone adjustments
 3. Investigate further discrimination improvements
-4. Build live daily pipeline (Phase 4)
+4. Build daily orchestration pipeline (fetch lineups → weather → odds → predict → alert)
 
 ## Key Files
 - `docs/STRATEGY.md` — Full mathematical framework, formulas, corrections, and detailed reasoning. READ THIS before building any core engine component.
 - `docs/PROJECT_GUIDE.md` — Step-by-step implementation guide with Claude Code prompts.
 - `src/markov/` — Markov chain engine
-- `src/data/` — API clients (MLB Stats, Odds, Weather)
+- `src/data/odds_api.py` — SportsGameOdds API client for NRFI/YRFI lines
+- `src/data/weather_api.py` — Tomorrow.io weather forecast API client
+- `src/pipeline/predict.py` — Main prediction pipeline (Odds Ratio → first-inning adj → env adj → Markov → calibrate)
 - `src/calibration/` — Isotonic regression calibration
 - `src/betting/` — Vig removal, Kelly criterion, edge calculation
+- `dashboard/` — Streamlit dashboard (app.py, queries.py, components.py, calculations.py)
 - `scripts/` — Data seeding, backtesting, daily orchestration
+- `config/calibrator.json` — Trained isotonic calibrator (2019-2024)
 
 ## Database
 Supabase Postgres. 14 tables: teams, parks, players, pitcher_stats, batter_stats, platoon_splits, umpires, league_averages, baserunner_advancement, games, lineups, odds, weather_snapshots, predictions.
@@ -92,4 +103,4 @@ Connection via .env (SUPABASE_URL, SUPABASE_SERVICE_KEY). Also configured via Su
 7. **NRFI base rate is ~50%, not ~70%.** Per-half-inning scoreless rate is ~71% (away ~73%, home ~69%). Full-game NRFI (both halves scoreless) is ~50%. Many published sources report the per-team figure; do not confuse with the full-game rate.
 
 ## Tech Stack
-Python, Supabase (Postgres), pybaseball, MLB Stats API (free), The Odds API, Tomorrow.io, Slack webhooks. Deployed on Mac Mini via cron.
+Python, Supabase (Postgres), pybaseball, MLB Stats API (free), SportsGameOdds API, Tomorrow.io, Streamlit, Slack webhooks. Deployed on Mac Mini via cron.

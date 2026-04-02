@@ -13,7 +13,7 @@ import os
 from typing import Optional
 
 from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate, apply_marcel_shrinkage
-from src.markov.chain import compute_p_zero_runs
+from src.markov.chain import compute_p_zero_runs, compute_gidp_fraction
 from src.markov.adjustments import (
     apply_all_adjustments,
     adjust_for_first_inning,
@@ -242,6 +242,16 @@ def _build_half_inning_rates(
         logger.warning('Pitcher %d has no stats — using league averages', pitcher_id)
         pitcher_rates = dict(league_rates)
 
+    # Fetch pitcher's GB rate for GIDP computation
+    pitcher_gb_rate = None
+    pitcher_stats_resp = (
+        db.table('pitcher_stats').select('gb_rate')
+        .eq('mlb_player_id', pitcher_id).eq('season', season)
+        .execute()
+    )
+    if pitcher_stats_resp.data and pitcher_stats_resp.data[0].get('gb_rate'):
+        pitcher_gb_rate = float(pitcher_stats_resp.data[0]['gb_rate'])
+
     # Select half-specific first-inning adjustment
     fi_adjust = adjust_for_first_inning_top if half == 'top' else adjust_for_first_inning_bottom
 
@@ -250,6 +260,7 @@ def _build_half_inning_rates(
     for lineup_row in lineup:
         batter_id = lineup_row['mlb_player_id']
         batter_hand = lineup_row.get('bats', 'R')
+        batter_speed = lineup_row.get('sprint_speed')
 
         # --- Batter rates ---
         # Get overall rates first (needed as shrinkage target for splits)
@@ -275,6 +286,9 @@ def _build_half_inning_rates(
 
         # --- Odds Ratio matchup ---
         matchup = compute_matchup_rates(batter_rates, p_rates, league_rates)
+
+        # --- Per-batter GIDP fraction (pitcher GB% × batter speed) ---
+        matchup['gidp_fraction'] = compute_gidp_fraction(pitcher_gb_rate, batter_speed)
 
         # --- First-inning adjustment (asymmetric by half) ---
         matchup = fi_adjust(matchup)
@@ -621,13 +635,14 @@ def _get_player(player_id: Optional[int], db) -> Optional[dict]:
 
 
 def _enrich_lineup(lineup_rows: list[dict], db) -> list[dict]:
-    """Add 'bats' field to each lineup row from the players table."""
+    """Add 'bats' and 'sprint_speed' fields to each lineup row from the players table."""
     enriched = []
     for row in lineup_rows:
         pid = row['mlb_player_id']
         player = _get_player(pid, db)
         entry = dict(row)
         entry['bats'] = (player or {}).get('bats', 'R')
+        entry['sprint_speed'] = (player or {}).get('sprint_speed')
         enriched.append(entry)
     return enriched
 

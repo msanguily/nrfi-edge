@@ -24,10 +24,13 @@ FIRST_INNING_MULTIPLIERS = {
 }
 
 
+_NON_RATE_KEYS = {'out_in_play', 'gidp_fraction'}
+
+
 def _apply_first_inning_multipliers(rates: dict, multipliers: dict) -> dict:
     """Apply a set of first-inning multipliers and renormalize."""
     result = dict(rates)
-    non_residual = [k for k in result if k != 'out_in_play']
+    non_residual = [k for k in result if k not in _NON_RATE_KEYS]
 
     for k in non_residual:
         multiplier = multipliers.get(k, 1.0)
@@ -102,7 +105,7 @@ def normalize_rates(rates: dict) -> dict:
     result = dict(rates)
 
     # Clamp negatives to 0 (except out_in_play which we recalculate)
-    non_residual = [k for k in result if k != 'out_in_play']
+    non_residual = [k for k in result if k not in _NON_RATE_KEYS]
     for k in non_residual:
         if result[k] < 0:
             result[k] = 0.0
@@ -124,7 +127,7 @@ def normalize_rates(rates: dict) -> dict:
 def _recalculate_residual(rates: dict) -> dict:
     """Recalculate 'out_in_play' as the residual after other rates."""
     result = dict(rates)
-    non_residual = [k for k in result if k != 'out_in_play']
+    non_residual = [k for k in result if k not in _NON_RATE_KEYS]
     result['out_in_play'] = 1.0 - sum(result[k] for k in non_residual)
     return result
 

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
 
 from src.markov.odds_ratio import compute_matchup_rates, compute_weighted_rate, apply_marcel_shrinkage
-from src.markov.chain import compute_p_zero_runs
+from src.markov.chain import compute_p_zero_runs, compute_gidp_fraction
 from src.markov.adjustments import (
     apply_all_adjustments,
     adjust_for_first_inning,
@@ -377,6 +377,12 @@ def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
     if pitcher_rates is None:
         pitcher_rates = dict(league_rates)
 
+    # Pitcher GB rate for GIDP computation
+    pitcher_stats_row = idx['pitcher_stats'].get((pitcher_id, season))
+    pitcher_gb_rate = None
+    if pitcher_stats_row and pitcher_stats_row.get('gb_rate'):
+        pitcher_gb_rate = float(pitcher_stats_row['gb_rate'])
+
     # Select half-specific first-inning adjustment
     fi_adjust = adjust_for_first_inning_top if half == 'top' else adjust_for_first_inning_bottom
 
@@ -386,6 +392,7 @@ def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
         batter_id = lineup_row['mlb_player_id']
         batter_info = idx['players'].get(batter_id, {})
         batter_hand = batter_info.get('bats', 'R') or 'R'
+        batter_speed = batter_info.get('sprint_speed')
 
         # Get overall batter rates first (shrinkage target for splits)
         batter_overall = get_marcel_weighted_rates(
@@ -410,6 +417,12 @@ def build_half_inning_rates(lineup, pitcher_id, pitcher_hand, season,
 
         # Odds Ratio matchup
         matchup = compute_matchup_rates(batter_rates, p_rates, league_rates)
+
+        # Per-batter GIDP fraction (pitcher GB% × batter speed)
+        matchup['gidp_fraction'] = compute_gidp_fraction(
+            pitcher_gb_rate,
+            float(batter_speed) if batter_speed else None,
+        )
 
         # First-inning adjustment (asymmetric by half)
         fi_adjusted = fi_adjust(matchup)

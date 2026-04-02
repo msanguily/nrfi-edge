@@ -263,23 +263,34 @@ class TestProductiveOuts:
 
     def test_gidp_raises_p_zero(self):
         """GIDP erases baserunners and ends innings faster, raising P(0 runs)."""
-        rates = _make_rates(single=0.20, double=0.05, out_in_play=0.75)
-        original_gidp = chain_module.GIDP_FRACTION
+        rates_with = _make_rates(single=0.20, double=0.05, out_in_play=0.75)
+        rates_with['gidp_fraction'] = 0.12
 
-        try:
-            # With GIDP active
-            chain_module.GIDP_FRACTION = 0.12
-            p_with = compute_p_zero_runs([rates] * 9, max_batters=9)
+        rates_without = _make_rates(single=0.20, double=0.05, out_in_play=0.75)
+        rates_without['gidp_fraction'] = 0.0
 
-            # Without GIDP
-            chain_module.GIDP_FRACTION = 0.0
-            p_without = compute_p_zero_runs([rates] * 9, max_batters=9)
-        finally:
-            chain_module.GIDP_FRACTION = original_gidp
+        p_with = compute_p_zero_runs([rates_with] * 9, max_batters=9)
+        p_without = compute_p_zero_runs([rates_without] * 9, max_batters=9)
 
         assert p_with > p_without, (
             f"GIDP should raise P(0 runs): with={p_with:.6f} vs without={p_without:.6f}"
         )
+
+    def test_high_gb_pitcher_raises_gidp(self):
+        """A high-GB pitcher should have a higher GIDP fraction than a fly-ball pitcher."""
+        from src.markov.chain import compute_gidp_fraction
+        high_gb = compute_gidp_fraction(pitcher_gb_rate=0.60, batter_sprint_speed=27.0)
+        low_gb = compute_gidp_fraction(pitcher_gb_rate=0.35, batter_sprint_speed=27.0)
+        assert high_gb > low_gb, f"High GB ({high_gb:.4f}) should exceed low GB ({low_gb:.4f})"
+        assert high_gb > 0.12, f"65% GB pitcher should have GIDP > 12%: {high_gb:.4f}"
+        assert low_gb < 0.12, f"35% GB pitcher should have GIDP < 12%: {low_gb:.4f}"
+
+    def test_fast_runner_reduces_gidp(self):
+        """A fast runner should have a lower GIDP fraction than a slow runner."""
+        from src.markov.chain import compute_gidp_fraction
+        fast = compute_gidp_fraction(pitcher_gb_rate=0.44, batter_sprint_speed=30.0)
+        slow = compute_gidp_fraction(pitcher_gb_rate=0.44, batter_sprint_speed=24.0)
+        assert fast < slow, f"Fast runner ({fast:.4f}) should have lower GIDP than slow ({slow:.4f})"
 
     def test_probability_conservation_with_productive_outs(self):
         """All probability must sum to 1.0 with productive outs and GIDP active."""

@@ -50,12 +50,14 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 | Calibrated std | 0.048 | 0.0535 | **+0.006 (wider usable spread)** |
 | 2025 Raw Brier Skill | +0.0052 | **+0.0065** | **+0.0013 (improved)** |
 
-**v0.4.0 Tier 1 changes:**
+**v0.4.0 Tier 1+2 changes:**
 1. Platoon split shrinkage (Marcel, constant=500 PA, regress toward player overall rate)
 2. Per-hit-type park factors (1B/2B/3B from FanGraphs, seeded for all 30 parks)
 3. Home/away asymmetric first-inning adjustments (K +/-2%, BB +/-1%)
 4. Temperature/wind adjustments expanded to doubles (40% of HR coeff) and triples (30%)
-5. Security: removed hardcoded Supabase credentials from all scripts
+5. Per-batter GIDP fraction (pitcher GB% × batter sprint speed, range 7-15%)
+6. Sprint speed data seeded from Statcast (1,225 players, avg 27.0 ft/sec)
+7. Security: removed hardcoded Supabase credentials from all scripts
 
 **High-Confidence (calibrated, all games):**
 - P(NRFI) > 0.54: 2,643 games → actual 58.2%
@@ -77,11 +79,10 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - [ ] Slack alerts for +EV picks
 
 ## Next Steps
-1. Implement pitcher-specific GIDP rate (use GB% instead of flat 12%)
-2. Add sprint speed adjustments to baserunner advancement probabilities
-3. Seed umpire/catcher framing data for zone and framing adjustments
-4. Build daily orchestration pipeline (fetch lineups → weather → odds → predict → alert)
-5. Consider Venn-Abers calibration upgrade (probability intervals for bet sizing)
+1. Seed umpire/catcher framing data for zone and framing adjustments (code exists, data needed)
+2. Build daily orchestration pipeline (fetch lineups → weather → odds → predict → alert)
+3. Consider Venn-Abers calibration upgrade (probability intervals for bet sizing)
+4. Investigate stolen base modeling (post-2023 rule changes increased SB ~50%)
 
 ## Key Files
 - `docs/STRATEGY.md` — Full mathematical framework, formulas, corrections, and detailed reasoning. READ THIS before building any core engine component.

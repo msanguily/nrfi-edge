@@ -29,8 +29,10 @@ NUM_TRANSIENT = 24      # 8 base configs × 3 outs
 STATE_ABSORB_ZERO = 24  # 3 outs, 0 runs
 STATE_ABSORB_SCORED = 25  # 3 outs, ≥1 run
 
-GIDP_FRACTION = 0.12  # ~12% of out-in-play with runner on 1st and < 2 outs
+DEFAULT_GIDP_FRACTION = 0.12  # ~12% of out-in-play with runner on 1st and < 2 outs
 PRODUCTIVE_OUT_FRACTION = 0.20  # ~20% of out-in-play with runner on 3rd and < 2 outs
+LEAGUE_AVG_GB_RATE = 0.44  # league average ground ball rate
+LEAGUE_AVG_SPRINT_SPEED = 27.0  # ft/sec, Statcast league average
 
 
 # ---------------------------------------------------------------------------
@@ -338,13 +340,16 @@ def compute_p_zero_runs(
             # Loaded (config 7) excluded from GIDP — DP usually scores a run
             apply_gidp = on_1st and outs < 2 and config != 7
 
+            # Per-batter GIDP fraction (from pitcher GB% and batter speed)
+            batter_gidp = rates.get('gidp_fraction', DEFAULT_GIDP_FRACTION)
+
             if apply_sac and apply_gidp:
                 # runners_1st_3rd (config 5): sac fly 20%, then GIDP
                 # within remaining 80%
                 sac_rate = oip_rate * PRODUCTIVE_OUT_FRACTION
                 remaining = oip_rate * (1 - PRODUCTIVE_OUT_FRACTION)
-                gidp_rate = remaining * GIDP_FRACTION
-                regular_rate = remaining * (1 - GIDP_FRACTION)
+                gidp_rate = remaining * batter_gidp
+                regular_rate = remaining * (1 - batter_gidp)
 
                 # Regular out: runners stay, outs += 1
                 new_absorb_zero, new_absorb_scored = (
@@ -405,8 +410,8 @@ def compute_p_zero_runs(
 
             elif apply_gidp:
                 # Runner on 1st, no sac fly (configs 1, 4)
-                gidp_rate = oip_rate * GIDP_FRACTION
-                regular_rate = oip_rate * (1 - GIDP_FRACTION)
+                gidp_rate = oip_rate * batter_gidp
+                regular_rate = oip_rate * (1 - batter_gidp)
 
                 # Regular out
                 new_absorb_zero, new_absorb_scored = (
@@ -539,6 +544,141 @@ def _apply_out_event_ret(
             new_scored[dest] += prob_s * rate
 
     return absorb_zero, absorb_scored
+
+
+def compute_gidp_fraction(pitcher_gb_rate: float = None,
+                          batter_sprint_speed: float = None) -> float:
+    """
+    Compute per-matchup GIDP fraction based on pitcher GB% and batter speed.
+
+    Research (CBS Sports, FanGraphs, Hardball Times):
+    - League avg GIDP per DP opportunity: ~11-12%
+    - Extreme GB pitchers (65%+ GB): ~13-15%
+    - Extreme FB pitchers (<42% GB): ~7-9%
+    - Fast runners reduce GIDP, slow runners increase it
+
+    Formula: base * (pitcher_gb / league_gb) * speed_factor
+    """
+    base = DEFAULT_GIDP_FRACTION
+
+    # Pitcher GB% adjustment
+    if pitcher_gb_rate is not None and pitcher_gb_rate > 0:
+        gb_multiplier = pitcher_gb_rate / LEAGUE_AVG_GB_RATE
+        # Clamp to reasonable range (0.5x to 1.8x)
+        gb_multiplier = max(0.5, min(1.8, gb_multiplier))
+    else:
+        gb_multiplier = 1.0
+
+    # Batter sprint speed adjustment
+    # Fast runners (30+ ft/sec) avoid ~20% more GIDP
+    # Slow runners (24- ft/sec) hit into ~20% more GIDP
+    if batter_sprint_speed is not None and batter_sprint_speed > 0:
+        speed_diff = batter_sprint_speed - LEAGUE_AVG_SPRINT_SPEED
+        # ~6.7% change per ft/sec from average
+        speed_factor = 1.0 - speed_diff * 0.067
+        speed_factor = max(0.7, min(1.3, speed_factor))
+    else:
+        speed_factor = 1.0
+
+    return base * gb_multiplier * speed_factor
+
+
+def speed_adjusted_advancement(base_probs: dict,
+                               runner_speeds: dict = None) -> dict:
+    """
+    Adjust baserunner advancement probabilities based on runner sprint speed.
+
+    For fast runners (30+ ft/sec):
+    - 1st-to-3rd on single: 29% → ~40%
+    - Scoring from 2nd on single: 60% → ~75%
+    For slow runners (24- ft/sec): opposite adjustments.
+
+    runner_speeds: dict of {base_position: sprint_speed} for current runners
+    Returns: modified copy of advancement_probs
+    """
+    if runner_speeds is None:
+        return base_probs
+
+    adjusted = {}
+    for key, outcomes in base_probs.items():
+        config_name, event = key
+        if event != 'single':
+            adjusted[key] = outcomes
+            continue
+
+        # Check if any runner on base has speed data
+        has_speed_adj = False
+        for base_pos, speed in runner_speeds.items():
+            if speed is not None and speed != LEAGUE_AVG_SPRINT_SPEED:
+                has_speed_adj = True
+                break
+
+        if not has_speed_adj:
+            adjusted[key] = outcomes
+            continue
+
+        # Adjust single advancement for runner speed
+        # This is a simplified model: apply speed adjustment to the
+        # most common advancement scenarios
+        new_outcomes = []
+        for outcome in outcomes:
+            new_outcome = dict(outcome)
+            new_outcomes.append(new_outcome)
+
+        # For runner on 1st singles: adjust 1st-to-3rd probability
+        if config_name == 'runner_1st' and '1st' in str(runner_speeds.get('1st', '')):
+            speed = runner_speeds.get('1st', LEAGUE_AVG_SPRINT_SPEED) or LEAGUE_AVG_SPRINT_SPEED
+            speed_diff = speed - LEAGUE_AVG_SPRINT_SPEED
+            # Shift probability from 1st&2nd to 1st&3rd
+            shift = speed_diff * 0.04  # ~4% shift per ft/sec
+            shift = max(-0.15, min(0.15, shift))
+            new_outcomes = _shift_advancement(outcomes, shift,
+                                              from_state='runners_1st_2nd',
+                                              to_state='runners_1st_3rd')
+
+        # For runner on 2nd singles: adjust scoring probability
+        elif config_name == 'runner_2nd' and runner_speeds.get('2nd'):
+            speed = runner_speeds.get('2nd', LEAGUE_AVG_SPRINT_SPEED) or LEAGUE_AVG_SPRINT_SPEED
+            speed_diff = speed - LEAGUE_AVG_SPRINT_SPEED
+            # Shift probability from staying at 3rd to scoring
+            shift = speed_diff * 0.05  # ~5% shift per ft/sec
+            shift = max(-0.20, min(0.20, shift))
+            # Find scoring outcome (runs_scored > 0) and non-scoring
+            scoring_idx = None
+            non_scoring_idx = None
+            for i, o in enumerate(outcomes):
+                if o['runs_scored'] > 0 and scoring_idx is None:
+                    scoring_idx = i
+                elif o['runs_scored'] == 0 and non_scoring_idx is None:
+                    non_scoring_idx = i
+            if scoring_idx is not None and non_scoring_idx is not None:
+                new_outcomes = [dict(o) for o in outcomes]
+                actual_shift = min(shift, new_outcomes[non_scoring_idx]['probability'])
+                actual_shift = max(actual_shift, -new_outcomes[scoring_idx]['probability'])
+                new_outcomes[scoring_idx]['probability'] += actual_shift
+                new_outcomes[non_scoring_idx]['probability'] -= actual_shift
+
+        adjusted[key] = new_outcomes
+
+    return adjusted
+
+
+def _shift_advancement(outcomes, shift, from_state, to_state):
+    """Shift probability mass between two advancement outcomes."""
+    new_outcomes = [dict(o) for o in outcomes]
+    from_idx = None
+    to_idx = None
+    for i, o in enumerate(new_outcomes):
+        if o['result_state'] == from_state and from_idx is None:
+            from_idx = i
+        if o['result_state'] == to_state and to_idx is None:
+            to_idx = i
+    if from_idx is not None and to_idx is not None:
+        actual_shift = min(shift, new_outcomes[from_idx]['probability'])
+        actual_shift = max(actual_shift, -new_outcomes[to_idx]['probability'])
+        new_outcomes[from_idx]['probability'] -= actual_shift
+        new_outcomes[to_idx]['probability'] += actual_shift
+    return new_outcomes
 
 
 def _fallback_advancement(config_name: str, event: str) -> list:

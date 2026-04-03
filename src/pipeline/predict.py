@@ -30,7 +30,7 @@ from src.betting.edge import (
 
 logger = logging.getLogger(__name__)
 
-MODEL_VERSION = '0.2.0'
+MODEL_VERSION = '0.4.0'
 
 # ---------------------------------------------------------------------------
 # Calibrator cache (loaded once on first use)

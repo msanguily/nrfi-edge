@@ -45,7 +45,7 @@ SB_HEADERS = {
 
 OUTCOME_KEYS = ['k', 'bb', 'hbp', 'single', 'double', 'triple', 'hr']
 BF_PER_IP = 4.3
-MODEL_VERSION = '0.3.0-weather'
+MODEL_VERSION = '0.4.0'
 
 # ---------------------------------------------------------------------------
 # Data loading

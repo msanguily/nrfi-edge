@@ -45,6 +45,22 @@ def _batched_in(sb, table, select_cols, column, values, extra_filters=None, page
     return all_rows
 
 
+def get_most_recent_prediction_date() -> date:
+    """Get the most recent date that has predictions. Returns None if no predictions exist."""
+    try:
+        sb = get_supabase()
+        res = sb.table("predictions").select("game_pk").order("created_at", desc=True).limit(1).execute()
+        if not res.data:
+            return None
+        game_pk = res.data[0]["game_pk"]
+        game_res = sb.table("games").select("game_date").eq("game_pk", game_pk).limit(1).execute()
+        if not game_res.data:
+            return None
+        return date.fromisoformat(game_res.data[0]["game_date"])
+    except Exception:
+        return None
+
+
 def get_data_status() -> dict:
     """Row counts and latest timestamps for all key tables."""
     try:
@@ -313,7 +329,9 @@ def get_season_stats(season: int = None) -> dict:
                                extra_filters=[("eq", ("bet_recommended", True))])
         else:
             bets = _paginated_select(
-                sb.table("predictions").select("*").eq("bet_recommended", True)
+                sb.table("predictions").select("*").eq(
+                    "bet_recommended", True
+                ).order("created_at", desc=True)
             )
 
         if not bets:
@@ -333,8 +351,8 @@ def get_season_stats(season: int = None) -> dict:
 
         for b in bets:
             units = float(b["bet_size_units"]) if b.get("bet_size_units") else 1.0
-            odds = int(b["best_nrfi_price"]) if b.get("best_nrfi_price") else -110
-            if b.get("result") is not None:
+            if b.get("result") is not None and b.get("best_nrfi_price"):
+                odds = int(b["best_nrfi_price"])
                 pl = calculate_profit(odds, units, b["result"])
                 total_pl += pl
                 total_wagered += units
@@ -422,7 +440,7 @@ def get_weather_batch(game_pks: list) -> dict:
         for r in rows:
             # Keep the most recent snapshot per game
             gpk = r["game_pk"]
-            if gpk not in result:
+            if gpk not in result or (r.get("captured_at") or "") > (result[gpk].get("captured_at") or ""):
                 result[gpk] = r
         return result
     except Exception:

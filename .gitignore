@@ -3,3 +3,7 @@ __pycache__/
 venv/
 .DS_Store
 *.pyc
+*.png
+logs/*.log
+.playwright-mcp/
+supabase/.temp/

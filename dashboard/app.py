@@ -17,11 +17,12 @@ from dashboard.queries import (
     get_prediction_history, get_season_stats, get_pitcher_nrfi_rate,
     get_backtest_results, get_bookmaker_performance,
     get_daily_pl, get_all_backtest_predictions, get_weather_batch,
+    get_most_recent_prediction_date,
 )
 from dashboard.calculations import (
     format_prob, format_pl, format_edge, format_clv, format_odds,
     current_streak, calculate_roi, calculate_profit,
-    classify_tier, TIER_STRONG, TIER_VALUE, TIER_LEAN, TIER_LABELS,
+    classify_tier, TIER_STRONG, TIER_VALUE, TIER_LEAN, TIER_LABELS, BET_EDGE,
 )
 from dashboard.components import (
     render_bet_card, render_games_table, render_cumulative_pl_chart,
@@ -52,12 +53,12 @@ st_autorefresh(interval=60000, key="refresh")
 EASTERN = pytz.timezone("US/Eastern")
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=30)  # Fast refresh: status indicators should update quickly
 def load_status():
     return get_data_status()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # Slow refresh: backtest results change only on retrain (weekly)
 def load_backtest():
     return get_backtest_results()
 
@@ -70,20 +71,28 @@ predictions_count = status.get("predictions_count", 0) if not has_error else 0
 odds_count = status.get("odds_count", 0) if not has_error else 0
 model_version = status.get("model_version", backtest.get("model_version", "unknown"))
 
+# Derive year range from backtest data for display strings
+_per_season = backtest.get("per_season", {})
+if _per_season:
+    _years = sorted(_per_season.keys())
+    year_range = f"{_years[0]}-{_years[-1]}"
+else:
+    year_range = "historical"
+
 today = date.today()
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=30)  # Fast refresh: live predictions update throughout the day
 def load_today():
     return get_todays_predictions(today)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=30)  # Fast refresh: odds move frequently during game day
 def load_today_odds():
     return get_todays_odds(today)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=60)  # Medium refresh: season aggregates change only when games finish
 def load_season_stats():
     return get_season_stats()
 
@@ -128,7 +137,7 @@ st.sidebar.divider()
 
 if state == "backtest":
     st.sidebar.markdown("### Historical Test Mode")
-    st.sidebar.caption("No live bets yet. Showing analysis of 2019-2025 data.")
+    st.sidebar.caption(f"No live bets yet. Showing analysis of {year_range} data.")
     st.sidebar.metric("Games Analyzed", f"{predictions_count:,}")
     st.sidebar.metric("Version", model_version)
 
@@ -201,12 +210,12 @@ if page == "Today's Picks":
     display_date = today
 
     if not today_preds:
-        st.warning("No predictions for today. Showing a sample day from 2024 as a demo.")
-        for demo_candidate in [date(2024, 6, 15), date(2024, 6, 14), date(2024, 5, 15)]:
-            display_preds = get_todays_predictions(demo_candidate)
+        st.warning("No predictions for today. Showing the most recent day with data as a demo.")
+        demo_date = get_most_recent_prediction_date()
+        if demo_date:
+            display_preds = get_todays_predictions(demo_date)
             if display_preds:
-                display_date = demo_candidate
-                break
+                display_date = demo_date
         if not display_preds:
             st.error("Could not find any day with predictions to display.")
     elif state == "backtest":
@@ -317,7 +326,7 @@ elif page == "Performance":
             if daily_pl:
                 render_profit_calendar(daily_pl, today.year, today.month)
 
-        bets = get_prediction_history(min_edge=0.03)
+        bets = get_prediction_history(min_edge=BET_EDGE)
 
         col3, col4 = st.columns(2)
         with col3:
@@ -346,14 +355,14 @@ elif page == "Performance":
                 "book", "%pinnacle%"
             ).execute()
             all_odds = res.data or []
-        except Exception:
-            pass
+        except Exception as e:
+            st.caption(f"Pinnacle comparison unavailable: {e}")
         if all_odds:
             render_model_vs_pinnacle(all_preds, all_odds)
 
     else:
         # Historical test mode — show model analysis
-        st.info("No live bets placed yet. Showing how the model performed on historical data (2019-2025).")
+        st.info(f"No live bets placed yet. Showing how the model performed on historical data ({year_range}).")
         st.divider()
 
         if backtest:
@@ -388,13 +397,13 @@ elif page == "Performance":
 elif page == "Model Accuracy":
     st.markdown("## Model Accuracy")
     st.caption("How well does the model predict NRFI outcomes? "
-               "Tested on 15,000+ historical games from 2019-2025.")
+               f"Tested on {backtest.get('games_predicted', 15000):,}+ historical games from {year_range}.")
 
     if backtest:
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("### Overall (2019-2025)")
+            st.markdown(f"### Overall ({year_range})")
             st.metric("Version", backtest.get("model_version", "unknown"))
             st.metric("Games Tested", f"{backtest.get('games_predicted', 0):,}")
 
@@ -407,8 +416,8 @@ elif page == "Model Accuracy":
             bss = raw.get("brier_skill", 0)
             r2.metric("vs Coin Flip", f"{bss:+.4f}",
                        help="Positive = better than always guessing 50%. Higher is better.")
-            r3.metric("Calibration Error", f"{raw.get('ece', 0):.4f}",
-                       help="How far off predictions are from reality. Lower is better.")
+            r3.metric("Cal. Error", f"{raw.get('ece', 0):.4f}",
+                       help="Calibration Error: how far off predictions are from reality. Lower is better.")
 
         with col2:
             st.markdown("### 2025 (Unseen Games)")
@@ -420,7 +429,8 @@ elif page == "Model Accuracy":
             t1, t2, t3 = st.columns(3)
             t1.metric("Accuracy", f"{test_raw.get('brier', 0):.4f}")
             t2.metric("vs Coin Flip", f"{test_raw.get('brier_skill', 0):+.4f}")
-            t3.metric("Calibration Error", f"{test_raw.get('ece', 0):.4f}")
+            t3.metric("Cal. Error", f"{test_raw.get('ece', 0):.4f}",
+                       help="Calibration Error")
 
             st.markdown("**After Correction**")
             st.caption("Adjusted so predictions better match reality")
@@ -433,7 +443,8 @@ elif page == "Model Accuracy":
             c2.metric("vs Coin Flip", f"{cal_bss:+.4f}",
                        delta=f"{improvement:+.4f} from correction",
                        delta_color="normal")
-            c3.metric("Calibration Error", f"{cal.get('ece', 0):.4f}")
+            c3.metric("Cal. Error", f"{cal.get('ece', 0):.4f}",
+                       help="Calibration Error")
 
         st.divider()
 
@@ -450,10 +461,10 @@ elif page == "Model Accuracy":
                    help="The model's average prediction. Ideally matches the actual rate.")
         raw_std = backtest.get('prediction_std', 0)
         cal_std = backtest.get('calibrated_std', 0)
-        p3.metric("Prediction Spread (raw)", f"{raw_std * 100:.1f}%",
-                   help="How spread out predictions are before correction. Higher = more differentiation between games.")
-        p4.metric("Prediction Spread (adjusted)", f"{cal_std * 100:.1f}%",
-                   help="After correction. Some spread is lost but accuracy improves.")
+        p3.metric("Spread (raw)", f"{raw_std * 100:.1f}%",
+                   help="Prediction spread: how spread out predictions are before correction. Higher = more differentiation between games.")
+        p4.metric("Spread (adjusted)", f"{cal_std * 100:.1f}%",
+                   help="Prediction spread after correction. Some spread is lost but accuracy improves.")
 
         st.divider()
 
@@ -494,7 +505,7 @@ elif page == "Model Accuracy":
                     "Off By": f"{bias:+.1%}",
                     "Accuracy": f"{data['brier']:.4f}",
                 })
-            st.dataframe(pd.DataFrame(season_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(season_rows), width="stretch", hide_index=True)
 
             render_backtest_season_chart(backtest)
 
@@ -534,7 +545,7 @@ elif page == "Model Accuracy":
         st.write(f"{'🟢' if predictions_count > 0 else '🔴'} "
                  f"Database: Connected ({status.get('games_count', 0):,} games)")
 
-        cal_path = Path(__file__).parent.parent / "config" / "calibrator.pkl"
+        cal_path = Path(__file__).parent.parent / "config" / "calibrator.json"
         if cal_path.exists():
             mtime = datetime.fromtimestamp(os.path.getmtime(cal_path))
             st.write(f"🟢 Prediction Adjuster: Trained {mtime.strftime('%b %-d, %Y')}")
@@ -632,9 +643,9 @@ elif page == "Bet History":
             # Backtest mode — show model performance stats instead of betting stats
             decided = wins + losses
             win_rate = (wins / decided * 100) if decided > 0 else 0
-            s1, s2, s3, s4 = st.columns(4)
+            s1, s2, s3, s4 = st.columns([1, 1.3, 1, 1.5])
             s1.metric("Games", f"{total:,}")
-            s2.metric("NRFI Record", f"{wins}W-{losses}L")
+            s2.metric("Record", f"{wins}W-{losses}L")
             s3.metric("NRFI Win Rate", f"{win_rate:.1f}%",
                        help="How often NRFIs actually happened in these games")
             # Calculate mean model accuracy for this subset
@@ -703,7 +714,7 @@ elif page == "Bet History":
             rows.append(row)
 
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True, height=600)
+        st.dataframe(df, width="stretch", hide_index=True, height=600)
 
         csv = df.to_csv(index=False)
         st.download_button("Download as CSV", csv, "nrfi_history.csv", "text/csv")

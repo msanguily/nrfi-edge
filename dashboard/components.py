@@ -63,10 +63,14 @@ def _parse_utc_to_eastern(utc_str):
 
 
 def _hr_factor_label(hr_factor):
-    """Turn park HR factor into plain English."""
+    """Turn park HR factor into plain English.
+    Handles both ratio format (0.93) and percentage format (93)."""
     if hr_factor is None:
         return ""
     f = float(hr_factor)
+    # DB stores as percentage (e.g. 93 = 93% of league avg); convert to ratio
+    if f > 10:
+        f = f / 100.0
     pct = abs(f - 1.0) * 100
     if f > 1.03:
         return f"hitter-friendly (+{pct:.0f}% HR)"
@@ -259,7 +263,7 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
     df = pd.DataFrame(rows)
     if "Tier" in df.columns and df["Tier"].isna().all():
         df = df.drop(columns=["Tier"])
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
     # Expandable details per game
     for pred in predictions:
@@ -318,9 +322,26 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
                 st.markdown("**What's Driving This Prediction**")
                 fd = pred["factor_details"]
                 for key, val in fd.items():
-                    # Clean up internal key names for display
                     label = key.replace("_", " ").title()
-                    st.write(f"- {label}: {val}")
+                    # Skip None values entirely
+                    if val is None:
+                        continue
+                    if isinstance(val, dict):
+                        # Format nested dicts, filtering out None values
+                        parts = [f"{k.replace('_', ' ')}: {v}" for k, v in val.items() if v is not None]
+                        if parts:
+                            st.write(f"- **{label}**: {', '.join(parts)}")
+                    elif isinstance(val, list) and val and isinstance(val[0], dict):
+                        # Format list of dicts (batter details)
+                        st.write(f"- **{label}**:")
+                        for item in val:
+                            parts = [f"{k.replace('_', ' ')}: {v}" for k, v in item.items() if v is not None]
+                            st.write(f"  - {', '.join(parts)}")
+                    elif isinstance(val, list):
+                        # Format plain lists (e.g., adjustments_applied)
+                        st.write(f"- {label}: {', '.join(str(v) for v in val)}")
+                    else:
+                        st.write(f"- {label}: {val}")
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +397,7 @@ def render_cumulative_pl_chart(daily_pl: list):
         template="plotly_dark", height=400,
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Blue line above gray dashed = running hot. Below = running cold. "
                "If both track together, the model is performing as expected.")
 
@@ -452,7 +473,7 @@ def render_profit_calendar(daily_pl: list, year: int = None, month: int = None):
         yaxis=dict(autorange="reversed", showticklabels=False),
         xaxis=dict(side="top"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Green = winning day, Red = losing day, Gray = no bets")
 
 
@@ -477,7 +498,7 @@ def render_monthly_pl_bars(daily_pl: list):
         xaxis_title="Month", yaxis_title="Units",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_accuracy_chart(predictions: list):
@@ -544,7 +565,7 @@ def render_accuracy_chart(predictions: list):
         template="plotly_dark", height=400,
         xaxis=dict(tickformat=".0%"), yaxis=dict(tickformat=".0%"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("If the green line follows the dashed gray line, the model is accurate. "
                "Points above the line = model underestimates NRFI. Below = overestimates.")
 
@@ -597,7 +618,7 @@ def render_model_vs_pinnacle(predictions: list, odds_data: list):
         template="plotly_dark", height=400,
         xaxis=dict(tickformat=".0%"), yaxis=dict(tickformat=".0%"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Points above the diagonal = we think NRFI is less likely than Pinnacle. "
                "Below = we think NRFI is more likely (potential value).")
 
@@ -623,7 +644,7 @@ def render_clv_histogram(bets: list):
         xaxis_title="Line Value (%)", yaxis_title="Number of Bets",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Line Value = did we bet at better odds than the final odds before game start? "
                "Positive average = consistently finding value. This is the #1 predictor of long-term profit.")
 
@@ -648,7 +669,7 @@ def render_edge_histogram(bets: list):
         xaxis_title="Advantage Over Sportsbook (%)", yaxis_title="Number of Bets",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("How much value the model found on each bet. Higher = more value.")
 
 
@@ -667,7 +688,7 @@ def render_bookmaker_table(book_data: list):
     df["Win Rate"] = df["Win Rate"].apply(lambda x: f"{x:.1f}%")
     df["Profit/Loss"] = df["Profit/Loss"].apply(lambda x: f"{x:+.2f}u")
     df["Avg Line Value"] = df["Avg Line Value"].apply(lambda x: f"{x * 100:+.1f}%")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +754,7 @@ def render_backtest_accuracy(predictions: list):
 
     st.markdown("**Accuracy by Confidence Level**")
     st.caption("We split all predictions into 10 equal groups from least confident to most confident")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def render_backtest_season_chart(backtest_results: dict):
@@ -759,7 +780,7 @@ def render_backtest_season_chart(backtest_results: dict):
         template="plotly_dark", height=350,
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("The green line should track the blue bars closely. "
                "If the model is accurate, predicted and actual NRFI rates match each year.")
 
@@ -801,10 +822,15 @@ def render_rolling_accuracy(predictions: list, window: int = 500):
         mode="lines", name=f"Model ({window}-game rolling)",
         line=dict(color="#00cc66", width=2),
     ))
-    fig.add_hline(y=no_skill, line_dash="dash", line_color="#ff6666",
-                  annotation_text=f"No-skill baseline ({no_skill:.4f})")
-    fig.add_hline(y=0.25, line_dash="dot", line_color="#888888",
-                  annotation_text="Coin flip (0.2500)")
+    # Only show separate coin-flip line if it's visually distinct from no-skill
+    if abs(no_skill - 0.25) > 0.002:
+        fig.add_hline(y=no_skill, line_dash="dash", line_color="#ff6666",
+                      annotation_text=f"No-skill baseline ({no_skill:.4f})")
+        fig.add_hline(y=0.25, line_dash="dot", line_color="#888888",
+                      annotation_text="Coin flip (0.2500)")
+    else:
+        fig.add_hline(y=no_skill, line_dash="dash", line_color="#ff6666",
+                      annotation_text=f"No-skill / coin flip ({no_skill:.4f})")
 
     fig.update_layout(
         title=f"Is the Model's Accuracy Stable Over Time? ({window}-game rolling window)",
@@ -812,7 +838,7 @@ def render_rolling_accuracy(predictions: list, window: int = 500):
         template="plotly_dark", height=400,
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Green line should stay BELOW the red dashed line (the no-skill baseline). "
                "If the green line rises above it, the model is performing worse than always guessing the average. "
                "Spikes are normal variance; sustained rises indicate real degradation.")
@@ -855,7 +881,7 @@ def render_prediction_distribution(predictions: list):
         xaxis_title="NRFI Chance (%)", yaxis_title="Number of Games",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     st.caption("A wider spread means the model is differentiating games well. "
                "If everything clustered at 50%, the model wouldn't be useful.")
 
@@ -885,7 +911,7 @@ def render_high_confidence_table(predictions: list):
         import pandas as pd
         st.markdown("### When We're Most Confident")
         st.caption("Higher confidence thresholds find fewer games but should have higher win rates")
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def render_tier_performance(bets: list):
@@ -975,4 +1001,4 @@ def render_tier_performance(bets: list):
             barmode="group", template="plotly_dark", height=320,
             yaxis_title="%", legend=dict(orientation="h", y=1.12),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")

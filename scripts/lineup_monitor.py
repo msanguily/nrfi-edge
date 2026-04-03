@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.utils import get_today_et, is_mlb_season, setup_logging, get_supabase_client, get_now_et
 from scripts.daily_schedule import ensure_player_exists
+from scripts.nightly_results import grade_game, grade_predictions
 from src.data.mlb_api import get_confirmed_lineups, get_player_info
 from src.data.odds_api import fetch_nrfi_odds, store_odds
 from src.data.weather_api import get_game_weather_for_prediction
@@ -223,9 +224,33 @@ def run():
             logger.error("Error processing game %d:\n%s", game_pk, traceback.format_exc())
             errors += 1
 
+    # Grade first-inning results for today's games that have started
+    games_graded = 0
+    ungraded = (
+        db.table("games")
+        .select("game_pk, status")
+        .eq("game_date", today_str)
+        .neq("status", "final")
+        .neq("status", "postponed")
+        .neq("status", "cancelled")
+        .execute()
+    )
+    for game in (ungraded.data or []):
+        try:
+            result = grade_game(db, game["game_pk"])
+            if result is not None:
+                nrfi, away_runs, home_runs = result
+                graded = grade_predictions(db, game["game_pk"], nrfi)
+                games_graded += 1
+                logger.info("Graded game %d: NRFI=%s (%d-%d), %d predictions updated",
+                            game["game_pk"], nrfi, away_runs, home_runs, graded)
+        except Exception:
+            logger.debug("Could not grade game %d yet", game["game_pk"])
+
     logger.info(
-        "Summary: checked %d games, %d new lineups, %d predictions made, %d bets recommended",
-        len(pending_games), new_lineups, predictions_made, bets_recommended,
+        "Summary: checked %d games, %d new lineups, %d predictions made, "
+        "%d bets recommended, %d games graded",
+        len(pending_games), new_lineups, predictions_made, bets_recommended, games_graded,
     )
 
     return 1 if errors > 0 else 0

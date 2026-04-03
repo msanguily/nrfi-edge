@@ -35,11 +35,26 @@ def _result_icon(result):
     return "⏳"
 
 
-def _status_label(status):
+def _status_label(status, game_time_utc=None):
     if status == "final":
         return "Final"
     if status in ("live", "in_progress"):
         return "Live"
+    # If game time has passed but DB still says scheduled, show a better label
+    if game_time_utc:
+        try:
+            import pytz
+            if isinstance(game_time_utc, str):
+                gt = datetime.fromisoformat(game_time_utc.replace("Z", "+00:00"))
+            else:
+                gt = game_time_utc
+            if gt.tzinfo is None:
+                gt = pytz.utc.localize(gt)
+            now = datetime.now(pytz.utc)
+            if now > gt:
+                return "In Progress"
+        except Exception:
+            pass
     return "Upcoming"
 
 
@@ -209,7 +224,7 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
         edge_val = float(pred["edge"]) if pred.get("edge") is not None else None
         tier = classify_tier(edge_val, pred.get("p_nrfi_calibrated"), pred.get("p_nrfi_combined"))
 
-        status = _status_label(pred.get("status"))
+        status = _status_label(pred.get("status"), pred.get("game_time_utc"))
         result = _result_icon(pred.get("result"))
 
         row = {

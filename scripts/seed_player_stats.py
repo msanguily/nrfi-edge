@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seed pitcher_stats and batter_stats tables from pybaseball (FanGraphs data)."""
+"""Seed pitcher_stats and batter_stats tables from pybaseball (FanGraphs data) 2019-2026."""
 
 import os
 import requests
@@ -25,7 +25,7 @@ UPSERT_HEADERS = {
     "Prefer": "resolution=merge-duplicates,return=minimal",
 }
 
-SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025]
+SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
 # League-average hit-type proportions for splitting pitcher H into 1B/2B/3B.
 # From league_averages: single≈0.152, double≈0.046, triple≈0.005 → total 0.203

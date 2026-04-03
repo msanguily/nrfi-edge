@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seed games table with MLB regular season games 2019-2025."""
+"""Seed games table with MLB regular season games 2019-2026."""
 
 import os
 import requests
@@ -30,6 +30,7 @@ SEASONS = [
     (2023, date(2023, 3, 30), date(2023, 10, 1)),
     (2024, date(2024, 3, 20), date(2024, 9, 29)),
     (2025, date(2025, 3, 27), date(2025, 9, 28)),
+    (2026, date(2026, 3, 27), date(2026, 9, 27)),
 ]
 
 

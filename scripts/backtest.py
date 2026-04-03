@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Phase 3 Backtest: Run NRFI predictions on all historical games 2019-2025.
+Phase 3 Backtest: Run NRFI predictions on all historical games 2019-2026.
 
 Bulk-loads all data from Supabase into memory, then runs the Markov chain
 prediction pipeline for every game with complete data (lineups + pitcher stats).
 
 Evaluates: Brier Score, ECE, calibration curve.
-Trains isotonic regression on 2019-2023, calibrates 2024 predictions, tests on 2025.
+Trains isotonic regression on 2019-2025, tests on 2026 (out-of-sample).
 """
 
 import sys
@@ -595,7 +595,7 @@ def main():
     all_actuals = np.array([1.0 if r['nrfi_result'] else 0.0 for r in results])
 
     raw_metrics = evaluate_predictions(
-        all_preds, all_actuals, "RAW MODEL — All Games (2019-2025)"
+        all_preds, all_actuals, "RAW MODEL — All Games (2019-2026)"
     )
 
     # Per-season breakdown
@@ -611,12 +611,12 @@ def main():
         print(f"  {season:>8} {len(sp):>7} {sa.mean():>7.3f} {sp.mean():>7.3f} "
               f"{brier:>8.5f} {ece:>8.5f}")
 
-    # Step 4: Calibration — Train on 2019-2024, test on 2025
+    # Step 4: Calibration — Train on 2019-2025, test on 2026
     print("\n[4/6] Training isotonic regression calibrator...")
-    print("  Train: 2019-2024 | Test: 2025 (out-of-sample)")
+    print("  Train: 2019-2025 | Test: 2026 (out-of-sample)")
 
-    train_mask = np.array([r['season'] <= 2024 for r in results])
-    test_mask = np.array([r['season'] == 2025 for r in results])
+    train_mask = np.array([r['season'] <= 2025 for r in results])
+    test_mask = np.array([r['season'] == 2026 for r in results])
 
     train_preds = all_preds[train_mask]
     train_actuals = all_actuals[train_mask]
@@ -628,20 +628,20 @@ def main():
     calibrator = NRFICalibrator()
     calibrator.fit(train_preds, train_actuals)
 
-    # Test on 2025 (out-of-sample)
+    # Test on 2026 (out-of-sample)
     test_raw_metrics = None
     test_cal_metrics = None
     if len(test_preds) > 0:
         test_calibrated = calibrator.calibrate_batch(test_preds)
-        print("\n  --- 2025 Test Set (Out-of-Sample) ---")
+        print("\n  --- 2026 Test Set (Out-of-Sample) ---")
         test_raw_metrics = evaluate_predictions(
-            test_preds, test_actuals, "2025 RAW"
+            test_preds, test_actuals, "2026 RAW"
         )
         test_cal_metrics = evaluate_predictions(
-            test_calibrated, test_actuals, "2025 CALIBRATED"
+            test_calibrated, test_actuals, "2026 CALIBRATED"
         )
 
-    # Save calibrator (trained on 2019-2024)
+    # Save calibrator (trained on 2019-2025)
     cal_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config')
     os.makedirs(cal_dir, exist_ok=True)
     cal_path = os.path.join(cal_dir, 'calibrator.json')
@@ -697,9 +697,9 @@ def main():
         else:
             print(f"  Calibrated P(NRFI) > {threshold:.2f}: 0 games")
 
-    # 2025 out-of-sample high-confidence
+    # 2026 out-of-sample high-confidence
     if len(test_preds) > 0:
-        print("\n  HIGH-CONFIDENCE ANALYSIS (2025 out-of-sample only):")
+        print("\n  HIGH-CONFIDENCE ANALYSIS (2026 out-of-sample only):")
         for threshold in [0.54, 0.56, 0.58, 0.60]:
             mask = test_calibrated > threshold
             n = mask.sum()
@@ -732,11 +732,11 @@ def main():
     print(f"  {'-'*25} {'-'*12} {'-'*12}")
 
     if test_raw_metrics and test_cal_metrics:
-        print(f"  {'Brier Score (2025)':<25} {test_raw_metrics['brier']:>12.6f} {test_cal_metrics['brier']:>12.6f}")
-        print(f"  {'ECE (2025)':<25} {test_raw_metrics['ece']:>12.6f} {test_cal_metrics['ece']:>12.6f}")
-        print(f"  {'Log Loss (2025)':<25} {test_raw_metrics['log_loss']:>12.6f} {test_cal_metrics['log_loss']:>12.6f}")
-        print(f"  {'Accuracy (2025)':<25} {test_raw_metrics['accuracy']:>12.4f} {test_cal_metrics['accuracy']:>12.4f}")
-        print(f"  {'Brier Skill (2025)':<25} {test_raw_metrics['brier_skill']:>12.4f} {test_cal_metrics['brier_skill']:>12.4f}")
+        print(f"  {'Brier Score (2026)':<25} {test_raw_metrics['brier']:>12.6f} {test_cal_metrics['brier']:>12.6f}")
+        print(f"  {'ECE (2026)':<25} {test_raw_metrics['ece']:>12.6f} {test_cal_metrics['ece']:>12.6f}")
+        print(f"  {'Log Loss (2026)':<25} {test_raw_metrics['log_loss']:>12.6f} {test_cal_metrics['log_loss']:>12.6f}")
+        print(f"  {'Accuracy (2026)':<25} {test_raw_metrics['accuracy']:>12.4f} {test_cal_metrics['accuracy']:>12.4f}")
+        print(f"  {'Brier Skill (2026)':<25} {test_raw_metrics['brier_skill']:>12.4f} {test_cal_metrics['brier_skill']:>12.4f}")
 
     print(f"\n  {'Brier Score (all)':<25} {raw_metrics['brier']:>12.6f}")
     print(f"  {'ECE (all)':<25} {raw_metrics['ece']:>12.6f}")
@@ -760,12 +760,12 @@ def main():
             'accuracy': raw_metrics['accuracy'],
             'brier_skill': raw_metrics['brier_skill'],
         },
-        'test_2025_raw': {
+        'test_2026_raw': {
             'brier': test_raw_metrics['brier'],
             'ece': test_raw_metrics['ece'],
             'brier_skill': test_raw_metrics['brier_skill'],
         } if test_raw_metrics else None,
-        'test_2025_calibrated': {
+        'test_2026_calibrated': {
             'brier': test_cal_metrics['brier'],
             'ece': test_cal_metrics['ece'],
             'brier_skill': test_cal_metrics['brier_skill'],

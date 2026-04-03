@@ -3,7 +3,7 @@
 
 Fetches vs-LHP and vs-RHP splits for all batters (PA >= 50) and
 vs-LHB and vs-RHB splits for all starting pitchers (GS >= 3)
-across 2019-2025 seasons.
+across 2019-2026 seasons.
 """
 
 import os
@@ -31,7 +31,7 @@ READ_HEADERS = {
 }
 
 MLB_API_BASE = "https://statsapi.mlb.com/api/v1"
-SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025]
+SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 API_DELAY = 0.3  # seconds between MLB API calls
 MIN_PA = 10  # minimum PA to store a split
 

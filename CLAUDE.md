@@ -10,10 +10,11 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - **Environmental adjustments**: Modify transition probabilities (not separate linear terms). Per-hit-type park factors (1B/2B/3B/HR from FanGraphs). Temperature and wind adjust HR, doubles, and triples (at 100%/40%/30% of HR coefficient). Umpire zone, catcher framing.
 - **Platoon split shrinkage**: Split rates regressed toward player's overall rate using Marcel (constant=500 PA per The Book Ch. 6). Prevents noise from small split samples.
 - **Calibration**: Isotonic regression (not Platt scaling). Evaluate with ECE, Brier Score, calibration plot.
-- **Betting**: Power method vig removal. 1/6 fractional Kelly capped at 2% bankroll. Minimum 3% edge to bet. Track CLV.
+- **Betting**: Power method vig removal. 1/6 fractional Kelly capped at 2% bankroll. Minimum 3% edge to bet. Track CLV via stored closing odds.
+- **Odds tracking**: Every 15-min refresh stores a time-series snapshot in odds_history and updates opening/closing prices on the odds table. CLV = closing_implied - bet_implied, computed nightly from stored data.
 
 ## Current Status
-*Last updated: 2026-04-02*
+*Last updated: 2026-04-03*
 
 ### Phase 1: Data Foundation
 - [x] Supabase schema (14 tables) migrated (Step 1.1)
@@ -76,13 +77,16 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - [x] Streamlit dashboard — today's picks, model performance, bet history
 - [x] Weather seeding script for historical data (scripts/seed_weather.py)
 - [x] Daily orchestration cron job — 4 scripts on cron (daily_schedule 9AM, lineup_monitor q15m, nightly_results 2AM, weekly_refresh Mon 6AM)
+- [x] Odds time-series storage — odds_history table tracks every price snapshot; odds table tracks opening/closing prices per book
+- [x] CLV computation — uses stored closing odds (last pre-game-start price), no longer depends on SGO API for completed games
 - [ ] Slack alerts for +EV picks — module complete (src/alerts/slack.py), not yet wired into pipeline scripts
 
 ## Next Steps
 1. Wire Slack alerts into pipeline scripts (send_nrfi_alert in lineup_monitor, send_daily_summary in nightly_results)
-2. Seed umpire/catcher framing data for zone and framing adjustments (code exists, data needed)
-3. Consider Venn-Abers calibration upgrade (probability intervals for bet sizing)
+2. Paper trade for 3+ months to accumulate CLV data (need 300-500 bets to validate edge)
+3. Seed umpire/catcher framing data for zone and framing adjustments (code exists, data needed)
 4. Investigate stolen base modeling (post-2023 rule changes increased SB ~50%)
+5. End-of-season review: analyze CLV, within-park temperature bias (90F+ games show 4.6pp over-prediction in backtest), dome bias (2.6pp)
 
 ## Key Files
 - `docs/STRATEGY.md` — Full mathematical framework, formulas, corrections, and detailed reasoning. READ THIS before building any core engine component.
@@ -98,7 +102,11 @@ MLB NRFI (No Run First Inning) betting model that uses a 26-state absorbing Mark
 - `config/calibrator.json` — Trained isotonic calibrator (2019-2025, retrained weekly)
 
 ## Database
-Supabase Postgres. 14 tables: teams, parks, players, pitcher_stats, batter_stats, platoon_splits, umpires, league_averages, baserunner_advancement, games, lineups, odds, weather_snapshots, predictions.
+Supabase Postgres. 15 tables: teams, parks, players, pitcher_stats, batter_stats, platoon_splits, umpires, league_averages, baserunner_advancement, games, lineups, odds, odds_history, weather_snapshots, predictions.
+
+- **odds** — Latest snapshot per (game_pk, book) with opening_nrfi_price, closing_nrfi_price, closing_implied_prob. Upserted on each 15-min refresh.
+- **odds_history** — Time-series INSERT of every price capture. Enables line-movement reconstruction and CLV audit.
+- **predictions** — Includes opening_nrfi_price, closing_nrfi_price, closing_implied_prob, clv columns for full bet tracking.
 
 Connection via .env (SUPABASE_URL, SUPABASE_SERVICE_KEY). Also configured via Supabase MCP and direct Postgres connection string.
 

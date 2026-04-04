@@ -276,10 +276,19 @@ Capped at 2% = bet 2% of bankroll
 CLV is the single best predictor of long-term profitability. Track it for every bet.
 
 ```
-CLV = closing_implied_probability - opening_implied_probability_when_you_bet
+CLV = closing_implied_probability - bet_implied_probability
 ```
 
 If you consistently bet at -120 and the line closes at -135, the market is confirming your edge. If you bet at -120 and it closes at -110, the market moved against you — your model may be miscalibrated.
+
+**Implementation:** The odds table stores `opening_nrfi_price` (first capture) and `closing_nrfi_price` (last capture before game start, updated on every 15-min refresh). The `odds_history` table stores every snapshot for full line-movement reconstruction. CLV is computed nightly from stored closing odds — no external API fetch needed for completed games.
+
+**Validation thresholds (from research):**
+- CLV is 10x less noisy than W/L records — ~50 bets with positive CLV is a meaningful signal
+- Need 300-500 bets to statistically confirm the model has a real edge (p < 0.05)
+- For NRFI markets specifically, CLV should be interpreted cautiously — the market is thinner than sides/totals, so closing lines may not be fully efficient
+
+**Important caveat:** A backtest proves the model is well-calibrated (ECE = 0.0003). But calibration alone doesn't mean profitability. The market is also well-calibrated. The edge comes from the gap between your model and the market's pricing, and that gap can only be measured with live CLV data.
 
 ## 7. Errors We Caught and Corrected
 
@@ -315,7 +324,7 @@ These corrections are critical context for anyone continuing this build:
 
 ## 8. Database Schema Summary
 
-14 tables in Supabase:
+15 tables in Supabase:
 
 - **teams** (30 rows) — MLB team reference data
 - **parks** (30 rows) — Stadium location, orientation, dome status, elevation, park factors
@@ -328,66 +337,92 @@ These corrections are critical context for anyone continuing this build:
 - **baserunner_advancement** (~75 rows) — Lookup table for Markov chain transitions
 - **games** — Every regular season game 2019-2025 with first-inning results
 - **lineups** — Confirmed batting orders per game
-- **odds** — NRFI/YRFI price snapshots from sportsbooks
+- **odds** — Latest NRFI/YRFI prices per (game_pk, book) with opening_nrfi_price, closing_nrfi_price, closing_implied_prob
+- **odds_history** — Time-series of every odds capture (INSERT per refresh, never overwritten). Enables line-movement reconstruction.
 - **weather_snapshots** — Game-time weather at each stadium
-- **predictions** — Model output with calibrated probabilities, edge, and bet recommendations
+- **predictions** — Model output with calibrated probabilities, edge, bet recommendations, opening/closing prices, and CLV
 
 ## 9. Implementation Phases
 
-### Phase 1: Foundation (No API keys needed) — CURRENT PHASE
+### Phase 1: Foundation ✅ COMPLETE
+- Seeded reference data, historical games (15,431), player stats, platoon splits, weather, lineups
 
-- Seed reference data (teams, parks, league averages, baserunner advancement) ✅ DONE
-- Seed historical games 2019-2025 from MLB Stats API ⬅️ IN PROGRESS
-- Seed historical player stats from pybaseball
-- Seed platoon splits
-- Compute first-inning-specific pitcher stats
+### Phase 2: Core Engine ✅ COMPLETE
+- Odds Ratio, Markov chain, environmental adjustments, prediction pipeline — all built and tested (203 tests)
 
-### Phase 2: Core Engine (No API keys needed)
+### Phase 3: Backtesting ✅ COMPLETE
+- v0.4.0: BSS +0.011, ECE 0.0003 (near-perfect calibration). Model achieves 82% of theoretical maximum BSS.
+- Isotonic calibrator trained on 15,488 predictions, retrained weekly
 
-- Build Odds Ratio module with unit tests
-- Build 26-state Markov chain engine
-- Build environmental adjustment module
-- Build NRFI prediction pipeline (orchestrates everything)
+### Phase 4: Live Pipeline ✅ COMPLETE
+- SportsGameOdds API client, Open-Meteo weather, MLB Stats API lineup monitor
+- 4 cron jobs: daily_schedule (9AM), lineup_monitor (q15m 11AM-8PM), nightly_results (2AM), weekly_refresh (Mon 6AM)
+- Odds time-series storage (odds_history table) with opening/closing price tracking
+- CLV computation from stored closing odds
+- Streamlit dashboard
 
-### Phase 3: Backtesting (No API keys needed) — CRITICAL GATE
+### Phase 5: Validation (CURRENT)
+- Paper trade the 2026 season, accumulate CLV data
+- Need 300-500 bets with CLV to confirm the edge is real
+- Do NOT adjust model parameters mid-season — trust the structure, recalibrate monthly
+- Wire Slack alerts for real-time bet notifications
 
-- Run predictions on all 15,000+ historical games
-- Evaluate with Brier Score, ECE, calibration plot
-- Train isotonic regression calibrator
-- Simulate betting performance with historical lines
-- ⚠️ DO NOT proceed to Phase 4 unless backtesting shows consistent +EV
-
-### Phase 4: Live Data Pipeline (API keys needed)
-
-- The Odds API client (live NRFI lines) — ~$80/month
-- Tomorrow.io weather client — free tier
-- MLB Stats API lineup monitor — free
-- Daily orchestrator script
-- Slack alerts for bet recommendations
-
-### Phase 5: Deployment
-
-- Clone to Mac Mini via Tailscale
-- Set up cron schedules
+### Phase 6: End-of-Season Review
+- Analyze accumulated CLV data to confirm or deny real edge
+- Within-park temperature analysis (90F+ games show 4.6pp over-prediction in backtest — investigate confound with park factors before adjusting)
+- Dome bias analysis (2.6pp over-prediction in backtest)
+- If edge confirmed: consider parameter tuning based on multi-season evidence
+- If edge not confirmed: investigate execution friction, line timing, market efficiency
 - Health monitoring via Slack
-
-### Phase 6: Ongoing Iteration
-
-- Weekly model review
-- Monthly recalibration
-- Feature experiments
-- Pre-season refresh
 
 ## 10. Key Principles
 
 1. **Never bet before backtesting.** Phase 3 must show +EV before going live.
 2. **Calibration > accuracy.** A model saying 72% that hits 72% is more valuable than one saying 80% that hits 75%.
-3. **Track CLV religiously.** Closing Line Value is the #1 predictor of long-term profit.
+3. **Track CLV religiously.** Closing Line Value is the #1 predictor of long-term profit. Need 300-500 bets to confirm edge.
 4. **1/6 Kelly, capped at 2%.** Never overbet. One pitch ruins any NRFI.
 5. **3% minimum edge.** Don't bet thin edges — vig and model uncertainty eat them.
 6. **The edge comes from combining factors the books underweight.** Park-adjusted weather, first-inning-specific platoon matchups, catcher framing, sprint speed.
 7. **Disaggregate everything.** The Markov chain needs individual outcome rates, not composite metrics.
 8. **Shrink aggressively.** Small samples are the enemy. Marcel regression with 1,200 PA constant.
+9. **Don't chase noise ("resulting").** A 3-7 day is a 17% probability event with a perfect model. Never adjust parameters in response to a losing streak.
+10. **Update the calibrator frequently, the model rarely.** Recalibrate isotonic monthly. Update Markov chain parameters only with multi-season evidence. Structural model changes require shadow testing over 500+ games.
+
+## 11. Model Monitoring Principles
+
+*Based on deep research into calibration drift detection, sports betting model monitoring, and statistical testing for binary outcomes.*
+
+### What Backtesting Can and Cannot Tell You
+
+A backtest proves the model is well-calibrated (does 55% predicted = 55% actual?). It **cannot** prove profitability because it has no odds data — it can't measure whether the model finds value the market misses. That requires live CLV data.
+
+### The Model Is Near Its Ceiling
+
+BSS of +0.011 achieves 82% of the theoretical maximum given the prediction spread (std ≈ 0.05). NRFI is inherently close to a coin flip. Further gains come from operational reliability (running every day, capturing every bet) not model sophistication.
+
+### Sample Size Reality for a 50% Base Rate
+
+To detect a bias of δ with 80% power: `n ≈ 2 / δ²`
+
+- 2pp bias: ~5,000 games (2+ seasons)
+- 3pp bias: ~2,200 games (1 season)
+- 5pp bias: ~800 games (2 months)
+
+Per-park (80 games): can only detect 5.6pp biases. Seasonal slices (300-500 games): can detect 3-5pp. These limits are information-theoretic — no statistical method circumvents them.
+
+### Known Backtest Biases to Investigate (End-of-Season)
+
+- **90F+ games**: model over-predicts NRFI by 4.6pp (n=701, p=0.016). Does NOT survive Bonferroni correction. 70%+ of these games come from 5-6 parks — could be park factor confound, not temperature. Must do within-park analysis before adjusting any coefficient.
+- **Dome parks**: model over-predicts NRFI by 2.6pp (n=514). Needs investigation.
+- **Calibration bin 0.54-0.57**: model under-predicts by 1.6pp — the key betting zone. Model may be too conservative where it matters most.
+
+### What NOT to Build (Validated by Research)
+
+- **CUSUM regime detection**: With binary residuals (variance=0.25) and target shifts of 3pp, detection takes 960+ games (~2.6 months) with 1 false alarm per season. Monthly recalibration is simpler and achieves the same effect.
+- **Venn-Abers calibration**: At n=15,488, interval widths are ~0.00003 (degenerate). "Full Kelly on conservative end" is equivalent to 99.97% Kelly — 6x more aggressive than current 1/6 Kelly. The tool measures calibration uncertainty (~0.2% of total), not the real uncertainty sources (player rates, Markov inputs).
+- **GBM on residuals for interaction effects**: Power analysis shows 20% power for 2pp interactions. Will only find noise.
+- **Per-park frequentist tests**: n=80 per park → MDE=5.6pp. Use hierarchical/empirical Bayes if park-level analysis is needed.
+- **Post-hoc OLS regression on residuals**: Violates the architecture ("environmental factors adjust transition probabilities, NOT separate linear terms"). If biases exist, fix them inside the Markov chain adjustments.
 9. **Environmental factors modify probabilities, not scores.** They adjust the Markov chain inputs, not a linear model.
 10. **Update weekly, recalibrate monthly.** The model evolves with the season.
 
@@ -425,3 +460,4 @@ nrfi-edge/
 
 </parameter>
 <parameter name="path">/mnt/user-data/outputs/CLAUDE.md</parameter>
+Before you build it, I want you to review your findings using deep research again. Look for any areas of improvement, errors, or inconsistencies to make sure we are using the best possible approach.

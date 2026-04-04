@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.utils import get_yesterday_et, setup_logging, get_supabase_client
 from src.data.mlb_api import get_game_linescore
-from src.data.odds_api import fetch_nrfi_odds, match_to_game_pk
 from src.betting.edge import american_to_decimal, decimal_to_implied
 
 logger = setup_logging("nightly_results").getChild("nightly_results")
@@ -89,43 +88,72 @@ def grade_predictions(db, game_pk, nrfi_result):
     return count
 
 
-def compute_clv(db, closing_odds_by_game):
-    """Compute CLV for recommended bets using closing odds.
+def compute_clv(db, graded_pks):
+    """Compute CLV for recommended bets using closing odds stored in the odds table.
 
     CLV = closing_implied_prob - bet_implied_prob
     Positive CLV means we got a better price than the closing line.
+
+    Uses the closing_nrfi_price and closing_implied_prob columns from the odds
+    table, which are updated on every odds refresh (so the last capture before
+    game start becomes the actual closing price).
     """
     updated = 0
 
-    for game_pk, close_fair_odds in closing_odds_by_game.items():
-        if close_fair_odds is None:
-            continue
-
+    for game_pk in graded_pks:
         # Get predictions with recommended bets for this game
-        resp = (
+        pred_resp = (
             db.table("predictions")
-            .select("id, best_nrfi_price, implied_prob_best, bet_recommended")
+            .select("id, best_book, best_nrfi_price, implied_prob_best, bet_recommended")
             .eq("game_pk", game_pk)
             .eq("bet_recommended", True)
             .execute()
         )
-        if not resp.data:
+        if not pred_resp.data:
             continue
 
-        # Closing implied probability (from fair/vig-removed closing odds)
-        try:
-            close_dec = american_to_decimal(close_fair_odds)
-            close_implied = decimal_to_implied(close_dec)
-        except (ValueError, ZeroDivisionError):
-            continue
-
-        for pred in resp.data:
+        for pred in pred_resp.data:
             bet_implied = float(pred["implied_prob_best"]) if pred.get("implied_prob_best") else None
             if bet_implied is None:
                 continue
 
+            best_book = pred.get("best_book")
+            if not best_book:
+                continue
+
+            # Fetch closing odds for this game/book from the odds table
+            odds_resp = (
+                db.table("odds")
+                .select("closing_nrfi_price, closing_implied_prob")
+                .eq("game_pk", game_pk)
+                .eq("book", best_book)
+                .execute()
+            )
+            if not odds_resp.data:
+                continue
+
+            close_implied = odds_resp.data[0].get("closing_implied_prob")
+            closing_price = odds_resp.data[0].get("closing_nrfi_price")
+
+            # If we don't have a stored closing implied prob, compute from price
+            if close_implied is None and closing_price is not None:
+                try:
+                    close_dec = american_to_decimal(int(closing_price))
+                    close_implied = decimal_to_implied(close_dec)
+                except (ValueError, ZeroDivisionError):
+                    continue
+
+            if close_implied is None:
+                continue
+
+            close_implied = float(close_implied)
             clv = close_implied - bet_implied
-            db.table("predictions").update({"clv": round(clv, 4)}).eq("id", pred["id"]).execute()
+
+            db.table("predictions").update({
+                "clv": round(clv, 4),
+                "closing_nrfi_price": closing_price,
+                "closing_implied_prob": round(close_implied, 4),
+            }).eq("id", pred["id"]).execute()
             updated += 1
 
     return updated
@@ -237,24 +265,12 @@ def run():
             logger.error("Error grading game %d:\n%s", game_pk, traceback.format_exc())
             errors += 1
 
-    # Step 4: Fetch closing odds and compute CLV
+    # Step 4: Compute CLV from stored closing odds
     clv_updated = 0
     try:
-        # Fetch odds for yesterday (closing lines — include completed games)
-        odds_list = fetch_nrfi_odds(yesterday_str, include_completed=True)
-        if odds_list:
-            closing_odds = {}
-            for od in odds_list:
-                gpk = match_to_game_pk(
-                    od["home_team_name"], od["away_team_name"], yesterday_str, db,
-                )
-                if gpk and gpk in graded_pks:
-                    # Use fair_odds (vig-removed) or close_odds as closing line
-                    closing_odds[gpk] = od.get("fair_odds") or od.get("close_odds")
-
-            if closing_odds:
-                clv_updated = compute_clv(db, closing_odds)
-                logger.info("Updated CLV for %d bets", clv_updated)
+        clv_updated = compute_clv(db, graded_pks)
+        if clv_updated:
+            logger.info("Updated CLV for %d bets", clv_updated)
     except Exception:
         logger.warning("CLV computation failed:\n%s", traceback.format_exc())
 

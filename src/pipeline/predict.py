@@ -581,6 +581,18 @@ def predict_nrfi(game_pk: int, supabase_client) -> Optional[dict]:
     # ------------------------------------------------------------------
     prediction_type = 'confirmed' if lineups_confirmed else 'preliminary'
 
+    # Capture opening/closing prices from the odds table for CLV tracking
+    opening_nrfi_price = None
+    closing_nrfi_price = None
+    closing_implied = None
+    if best_book and odds_resp.data:
+        for r in odds_resp.data:
+            if r['book'] == best_book:
+                opening_nrfi_price = r.get('opening_nrfi_price')
+                closing_nrfi_price = r.get('closing_nrfi_price')
+                closing_implied = r.get('closing_implied_prob')
+                break
+
     prediction_row = {
         'game_pk': game_pk,
         'prediction_type': prediction_type,
@@ -595,6 +607,9 @@ def predict_nrfi(game_pk: int, supabase_client) -> Optional[dict]:
         'edge': round(edge, 4) if edge is not None else None,
         'bet_recommended': bet_recommended,
         'kelly_fraction': round(kelly, 4) if kelly is not None else None,
+        'opening_nrfi_price': opening_nrfi_price,
+        'closing_nrfi_price': closing_nrfi_price,
+        'closing_implied_prob': closing_implied,
         'factor_details': factor_details,
     }
 

@@ -240,11 +240,15 @@ def match_to_game_pk(
 
 
 def store_odds(odds_list: List[Dict], supabase_client) -> int:
-    """Store fetched odds in the odds table.
+    """Store fetched odds in the odds table (latest snapshot) and odds_history
+    (time-series of every capture).
 
-    Stores one row per (game_pk, bookmaker). Uses upsert with ON CONFLICT
-    on (game_pk, book) to handle re-fetches gracefully.
-    Returns count of rows inserted/updated. Skips unmatched games.
+    The odds table keeps one row per (game_pk, book) with the latest prices,
+    plus opening_nrfi_price (first price seen) and closing_nrfi_price (updated
+    each refresh so the last capture before game start becomes the close).
+    odds_history gets an INSERT on every refresh for full line-movement tracking.
+
+    Returns count of rows stored. Skips unmatched games.
     """
     rows_stored = 0
 
@@ -289,7 +293,8 @@ def store_odds(odds_list: List[Dict], supabase_client) -> int:
                 round(decimal_to_implied(nrfi_dec), 4) if nrfi_dec else None
             )
 
-            row = {
+            # --- 1. Always INSERT into odds_history (time-series) ---
+            history_row = {
                 "game_pk": game_pk,
                 "book": book,
                 "nrfi_price": nrfi_price,
@@ -298,6 +303,44 @@ def store_odds(odds_list: List[Dict], supabase_client) -> int:
                 "yrfi_decimal": yrfi_dec,
                 "implied_nrfi_prob": implied,
             }
+            try:
+                supabase_client.table("odds_history").insert(
+                    history_row
+                ).execute()
+            except Exception:
+                pass  # history table may not exist yet (pre-migration)
+
+            # --- 2. Check if opening price exists for this game/book ---
+            existing = (
+                supabase_client.table("odds")
+                .select("opening_nrfi_price")
+                .eq("game_pk", game_pk)
+                .eq("book", book)
+                .execute()
+            )
+            has_opening = (
+                existing.data
+                and existing.data[0].get("opening_nrfi_price") is not None
+            )
+
+            # --- 3. Upsert latest snapshot into odds table ---
+            row = {
+                "game_pk": game_pk,
+                "book": book,
+                "nrfi_price": nrfi_price,
+                "yrfi_price": yrfi_price,
+                "nrfi_decimal": nrfi_dec,
+                "yrfi_decimal": yrfi_dec,
+                "implied_nrfi_prob": implied,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                # Always update closing to the latest — the last refresh
+                # before game start becomes the actual closing price.
+                "closing_nrfi_price": nrfi_price,
+                "closing_implied_prob": implied,
+            }
+            # Set opening price only on first capture
+            if not has_opening:
+                row["opening_nrfi_price"] = nrfi_price
 
             supabase_client.table("odds").upsert(
                 row, on_conflict="game_pk,book"

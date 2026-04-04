@@ -6,3 +6,8 @@ supabase
 python-dotenv
 requests
 scikit-learn
+streamlit>=1.28.0
+streamlit-autorefresh
+plotly>=5.0.0
+psycopg2-binary
+pytz

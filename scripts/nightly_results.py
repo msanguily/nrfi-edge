@@ -240,8 +240,8 @@ def run():
     # Step 4: Fetch closing odds and compute CLV
     clv_updated = 0
     try:
-        # Fetch odds for yesterday (closing lines)
-        odds_list = fetch_nrfi_odds(yesterday_str)
+        # Fetch odds for yesterday (closing lines — include completed games)
+        odds_list = fetch_nrfi_odds(yesterday_str, include_completed=True)
         if odds_list:
             closing_odds = {}
             for od in odds_list:

@@ -336,27 +336,73 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
             if pred.get("factor_details") and isinstance(pred["factor_details"], dict):
                 st.markdown("**What's Driving This Prediction**")
                 fd = pred["factor_details"]
-                for key, val in fd.items():
-                    label = key.replace("_", " ").title()
-                    # Skip None values entirely
-                    if val is None:
+
+                # Park info
+                if fd.get("park"):
+                    park = fd["park"]
+                    park_name = park.get("name", "Unknown")
+                    hr_label = _hr_factor_label(park.get("hr_factor"))
+                    dome = " (dome)" if park.get("is_dome") else ""
+                    st.write(f"- **Park**: {park_name}{dome}" +
+                             (f" — {hr_label}" if hr_label else ""))
+
+                # Weather
+                if fd.get("weather"):
+                    w = fd["weather"]
+                    parts = []
+                    if w.get("temp") is not None:
+                        parts.append(f"{w['temp']:.0f}\u00b0F")
+                    if w.get("wind_speed") is not None:
+                        wind_dir = w.get("wind_relative", "")
+                        parts.append(f"Wind {w['wind_speed']:.0f} mph {wind_dir}".strip())
+                    if parts:
+                        st.write(f"- **Weather**: {', '.join(parts)}")
+
+                # Pitchers — show name, K%, BB%, HR%
+                for role, key in [("Away Pitcher", "away_pitcher"), ("Home Pitcher", "home_pitcher")]:
+                    p = fd.get(key)
+                    if not p:
                         continue
-                    if isinstance(val, dict):
-                        # Format nested dicts, filtering out None values
-                        parts = [f"{k.replace('_', ' ')}: {v}" for k, v in val.items() if v is not None]
-                        if parts:
-                            st.write(f"- **{label}**: {', '.join(parts)}")
-                    elif isinstance(val, list) and val and isinstance(val[0], dict):
-                        # Format list of dicts (batter details)
-                        st.write(f"- **{label}**:")
-                        for item in val:
-                            parts = [f"{k.replace('_', ' ')}: {v}" for k, v in item.items() if v is not None]
-                            st.write(f"  - {', '.join(parts)}")
-                    elif isinstance(val, list):
-                        # Format plain lists (e.g., adjustments_applied)
-                        st.write(f"- {label}: {', '.join(str(v) for v in val)}")
-                    else:
-                        st.write(f"- {label}: {val}")
+                    name = p.get("name", f"ID {p.get('id', '?')}")
+                    stats = []
+                    if p.get("k_rate") is not None:
+                        stats.append(f"K {p['k_rate']:.1%}")
+                    if p.get("bb_rate") is not None:
+                        stats.append(f"BB {p['bb_rate']:.1%}")
+                    if p.get("hr_rate") is not None:
+                        stats.append(f"HR {p['hr_rate']:.1%}")
+                    st.write(f"- **{role}**: {name}" +
+                             (f" ({', '.join(stats)})" if stats else ""))
+
+                # Batters — show names if available, otherwise IDs
+                for role, key in [("Away Top Batters", "away_top4_batters"),
+                                  ("Home Top Batters", "home_top4_batters")]:
+                    batters = fd.get(key)
+                    if not batters or not isinstance(batters, list):
+                        continue
+                    batter_strs = []
+                    for b in batters:
+                        name = b.get("name", f"#{b.get('id', '?')}")
+                        hr = f"HR {b['matchup_hr_rate']:.1%}" if b.get("matchup_hr_rate") is not None else ""
+                        batter_strs.append(f"{name} ({hr})" if hr else name)
+                    st.write(f"- **{role}**: {', '.join(batter_strs)}")
+
+                # Adjustments applied
+                adj = fd.get("adjustments_applied")
+                if adj and isinstance(adj, list):
+                    labels = [a.replace("_", " ").title() for a in adj]
+                    st.write(f"- **Adjustments**: {', '.join(labels)}")
+
+                # Any remaining keys not handled above
+                _handled = {"park", "weather", "away_pitcher", "home_pitcher",
+                            "away_top4_batters", "home_top4_batters", "adjustments_applied"}
+                for key, val in fd.items():
+                    if key in _handled or val is None:
+                        continue
+                    label = key.replace("_", " ").title()
+                    if isinstance(val, (dict, list)):
+                        continue  # Skip complex leftovers to keep display clean
+                    st.write(f"- **{label}**: {val}")
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +458,7 @@ def render_cumulative_pl_chart(daily_pl: list):
         template="plotly_dark", height=400,
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("Blue line above gray dashed = running hot. Below = running cold. "
                "If both track together, the model is performing as expected.")
 
@@ -488,7 +534,7 @@ def render_profit_calendar(daily_pl: list, year: int = None, month: int = None):
         yaxis=dict(autorange="reversed", showticklabels=False),
         xaxis=dict(side="top"),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("Green = winning day, Red = losing day, Gray = no bets")
 
 
@@ -513,7 +559,7 @@ def render_monthly_pl_bars(daily_pl: list):
         xaxis_title="Month", yaxis_title="Units",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def render_accuracy_chart(predictions: list):
@@ -580,7 +626,7 @@ def render_accuracy_chart(predictions: list):
         template="plotly_dark", height=400,
         xaxis=dict(tickformat=".0%"), yaxis=dict(tickformat=".0%"),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("If the green line follows the dashed gray line, the model is accurate. "
                "Points above the line = model underestimates NRFI. Below = overestimates.")
 
@@ -633,7 +679,7 @@ def render_model_vs_pinnacle(predictions: list, odds_data: list):
         template="plotly_dark", height=400,
         xaxis=dict(tickformat=".0%"), yaxis=dict(tickformat=".0%"),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("Points above the diagonal = we think NRFI is less likely than Pinnacle. "
                "Below = we think NRFI is more likely (potential value).")
 
@@ -659,7 +705,7 @@ def render_clv_histogram(bets: list):
         xaxis_title="Line Value (%)", yaxis_title="Number of Bets",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("Line Value = did we bet at better odds than the final odds before game start? "
                "Positive average = consistently finding value. This is the #1 predictor of long-term profit.")
 
@@ -684,7 +730,7 @@ def render_edge_histogram(bets: list):
         xaxis_title="Advantage Over Sportsbook (%)", yaxis_title="Number of Bets",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("How much value the model found on each bet. Higher = more value.")
 
 
@@ -789,13 +835,18 @@ def render_backtest_season_chart(backtest_results: dict):
     fig.add_trace(go.Scatter(x=seasons, y=mean_preds, name="What We Predicted",
                              mode="lines+markers", line=dict(color="#00cc66", width=2)))
 
+    # Set Y-axis range to meaningful bounds so differences are visible
+    all_vals = nrfi_rates + mean_preds
+    y_min = max(0, min(all_vals) - 5)
+    y_max = max(all_vals) + 3
     fig.update_layout(
         title="Season-by-Season: Predicted vs Actual NRFI Rate",
         xaxis_title="Season", yaxis_title="NRFI Rate (%)",
         template="plotly_dark", height=350,
+        yaxis=dict(range=[y_min, y_max]),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("The green line should track the blue bars closely. "
                "If the model is accurate, predicted and actual NRFI rates match each year.")
 
@@ -853,7 +904,7 @@ def render_rolling_accuracy(predictions: list, window: int = 500):
         template="plotly_dark", height=400,
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("Green line should stay BELOW the red dashed line (the no-skill baseline). "
                "If the green line rises above it, the model is performing worse than always guessing the average. "
                "Spikes are normal variance; sustained rises indicate real degradation.")
@@ -896,7 +947,7 @@ def render_prediction_distribution(predictions: list):
         xaxis_title="NRFI Chance (%)", yaxis_title="Number of Games",
         template="plotly_dark", height=350,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
     st.caption("A wider spread means the model is differentiating games well. "
                "If everything clustered at 50%, the model wouldn't be useful.")
 
@@ -1016,4 +1067,4 @@ def render_tier_performance(bets: list):
             barmode="group", template="plotly_dark", height=320,
             yaxis_title="%", legend=dict(orientation="h", y=1.12),
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)

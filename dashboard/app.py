@@ -142,7 +142,12 @@ if state == "backtest":
     st.sidebar.metric("Version", model_version)
 
     if backtest:
-        cal = backtest.get("test_2025_calibrated", {})
+        # Dynamically find test year calibrated data
+        _sidebar_cal_key = next(
+            (k for k in backtest if k.startswith("test_") and k.endswith("_calibrated")),
+            "test_2025_calibrated"
+        )
+        cal = backtest.get(_sidebar_cal_key, {})
         # Explain Brier Skill in plain terms
         bss = cal.get("brier_skill", 0)
         if bss > 0:
@@ -420,10 +425,17 @@ elif page == "Model Accuracy":
                        help="Calibration Error: how far off predictions are from reality. Lower is better.")
 
         with col2:
-            st.markdown("### 2025 (Unseen Games)")
-            st.caption("The model never trained on 2025 data, so this tests real predictive power")
-            test_raw = backtest.get("test_2025_raw", {})
-            cal = backtest.get("test_2025_calibrated", {})
+            # Dynamically detect test year from backtest keys (test_2026_raw, test_2025_raw, etc.)
+            _test_year = None
+            for k in backtest:
+                if k.startswith("test_") and k.endswith("_raw"):
+                    _test_year = k.replace("test_", "").replace("_raw", "")
+                    break
+            _test_year = _test_year or _years[-1] if _per_season else "2025"
+            st.markdown(f"### {_test_year} (Unseen Games)")
+            st.caption(f"The model never trained on {_test_year} data, so this tests real predictive power")
+            test_raw = backtest.get(f"test_{_test_year}_raw", {})
+            cal = backtest.get(f"test_{_test_year}_calibrated", {})
 
             st.markdown("**Before Correction**")
             t1, t2, t3 = st.columns(3)
@@ -572,7 +584,7 @@ elif page == "Bet History":
     with fcol4:
         result_filter = st.selectbox("Outcome", ["All", "Wins", "Losses", "Pending"])
     with fcol5:
-        season = st.selectbox("Season", [None, 2025, 2024, 2023, 2022, 2021, 2020, 2019],
+        season = st.selectbox("Season", [None, 2026, 2025, 2024, 2023, 2022, 2021, 2020, 2019],
                                format_func=lambda x: "All" if x is None else str(x))
     with fcol6:
         tier_filter = st.selectbox("Confidence Tier",

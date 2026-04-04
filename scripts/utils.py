@@ -1,6 +1,7 @@
 """Shared utilities for daily pipeline scripts."""
 
 import logging
+import logging.handlers
 import os
 import sys
 from datetime import date, datetime, timedelta
@@ -48,7 +49,9 @@ def setup_logging(script_name):
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_handler = logging.FileHandler(log_path)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path, maxBytes=10 * 1024 * 1024, backupCount=5,
+    )
     file_handler.setFormatter(formatter)
 
     console_handler = logging.StreamHandler(sys.stdout)

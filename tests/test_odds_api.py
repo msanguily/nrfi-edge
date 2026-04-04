@@ -62,7 +62,7 @@ class TestAmericanToImpliedProb:
 # ---------------------------------------------------------------------------
 
 MOCK_SGO_RESPONSE = {
-    "events": [
+    "data": [
         {
             "eventID": "MLB-2026-04-02-NYY-BOS",
             "teams": {
@@ -76,23 +76,33 @@ MOCK_SGO_RESPONSE = {
                     "closeBookOdds": "-112",
                     "byBookmaker": {
                         "draftkings": {
-                            "odds": -120,
+                            "odds": "-120",
+                            "overUnder": "0.5",
                             "available": True,
                             "deeplink": "https://dk.com/nrfi-nyy-bos",
                         },
                         "fanduel": {
-                            "odds": -115,
+                            "odds": "-115",
+                            "overUnder": "0.5",
                             "available": True,
                             "deeplink": "https://fd.com/nrfi-nyy-bos",
                         },
                         "pinnacle": {
-                            "odds": -112,
+                            "odds": "-112",
+                            "overUnder": "0.5",
                             "available": True,
                         },
                         "betrivers": {
-                            "odds": -130,
+                            "odds": "-130",
+                            "overUnder": "0.5",
                             "available": False,
                             "deeplink": "https://br.com/nrfi-nyy-bos",
+                        },
+                        "fanatics": {
+                            "odds": "-250",
+                            "overUnder": "1.5",
+                            "available": True,
+                            "deeplink": "https://fan.com/nrfi-nyy-bos",
                         },
                     },
                 },
@@ -100,20 +110,24 @@ MOCK_SGO_RESPONSE = {
                     "fairOdds": "-109",
                     "byBookmaker": {
                         "draftkings": {
-                            "odds": 100,
+                            "odds": "100",
+                            "overUnder": "0.5",
                             "available": True,
                             "deeplink": "https://dk.com/yrfi-nyy-bos",
                         },
                         "fanduel": {
-                            "odds": -105,
+                            "odds": "-105",
+                            "overUnder": "0.5",
                             "available": True,
                         },
                         "pinnacle": {
-                            "odds": -108,
+                            "odds": "-108",
+                            "overUnder": "0.5",
                             "available": True,
                         },
                         "betrivers": {
-                            "odds": 110,
+                            "odds": "110",
+                            "overUnder": "0.5",
                             "available": False,
                         },
                     },
@@ -197,21 +211,34 @@ class TestFetchNrfiOdds:
 
     @patch("src.data.odds_api._request")
     @patch("src.data.odds_api._get_api_key", return_value="test-key")
+    def test_overunder_filter(self, _mock_key, mock_request):
+        """Bookmakers with overUnder != 0.5 are excluded."""
+        mock_request.return_value = MOCK_SGO_RESPONSE
+
+        results = fetch_nrfi_odds("2026-04-02")
+        game = results[0]
+
+        # fanatics has overUnder=1.5, should be excluded
+        assert "fanatics" not in game["nrfi_odds"]
+        assert len(game["nrfi_odds"]) == 3  # dk, fd, pinnacle only
+
+    @patch("src.data.odds_api._request")
+    @patch("src.data.odds_api._get_api_key", return_value="test-key")
     def test_pagination(self, _mock_key, mock_request):
         """Handles pagination via nextCursor."""
         page1 = {
-            "events": [MOCK_SGO_RESPONSE["events"][0]],
+            "data": [MOCK_SGO_RESPONSE["data"][0]],
             "nextCursor": "cursor-abc",
         }
         page2_event = {
-            **MOCK_SGO_RESPONSE["events"][0],
+            **MOCK_SGO_RESPONSE["data"][0],
             "eventID": "MLB-2026-04-02-LAD-SF",
             "teams": {
                 "home": {"names": {"long": "San Francisco Giants"}},
                 "away": {"names": {"long": "Los Angeles Dodgers"}},
             },
         }
-        page2 = {"events": [page2_event], "nextCursor": None}
+        page2 = {"data": [page2_event], "nextCursor": None}
 
         mock_request.side_effect = [page1, page2]
 

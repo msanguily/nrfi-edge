@@ -57,14 +57,26 @@ TRIPLE_PCT = 0.005 / _HIT_TOTAL
 # Step 1: Refresh pitcher stats (current season)
 # ---------------------------------------------------------------------------
 
+def _early_season(season) -> bool:
+    """True if we're in the first 4 weeks of the season (lower data thresholds)."""
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    # Opening Day is typically late March / early April
+    season_start = _date(season, 3, 27)
+    return today < season_start + _td(days=28)
+
+
 def refresh_pitcher_stats(db, season, fg_to_mlb):
     """Refresh pitcher stats for the current season from FanGraphs via pybaseball."""
     from pybaseball import pitching_stats
 
-    logger.info("Fetching %d pitching stats ...", season)
+    early = _early_season(season)
+    min_gs = 1 if early else 3
+
+    logger.info("Fetching %d pitching stats (min GS=%d) ...", season, min_gs)
     pit = pitching_stats(season, qual=0)
-    pit = pit[pit["GS"] >= 3]
-    logger.info("Found %d pitchers (GS >= 3)", len(pit))
+    pit = pit[pit["GS"] >= min_gs]
+    logger.info("Found %d pitchers (GS >= %d)", len(pit), min_gs)
 
     count = 0
     for _, row in pit.iterrows():
@@ -126,10 +138,13 @@ def refresh_batter_stats(db, season, fg_to_mlb):
     """Refresh batter stats for the current season from FanGraphs via pybaseball."""
     from pybaseball import batting_stats
 
-    logger.info("Fetching %d batting stats ...", season)
+    early = _early_season(season)
+    min_pa = 1 if early else 50
+
+    logger.info("Fetching %d batting stats (min PA=%d) ...", season, min_pa)
     bat = batting_stats(season, qual=0)
-    bat = bat[bat["PA"] >= 50]
-    logger.info("Found %d batters (PA >= 50)", len(bat))
+    bat = bat[bat["PA"] >= min_pa]
+    logger.info("Found %d batters (PA >= %d)", len(bat), min_pa)
 
     count = 0
     for _, row in bat.iterrows():

@@ -26,6 +26,16 @@ _TEAM_NAME_MAP = {
 }
 
 
+def _parse_odds_str(val) -> Optional[int]:
+    """Convert an odds value (string or int) to int, or None."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def _get_api_key() -> str:
     key = os.getenv("SPORTSGAMEODDS_API_KEY")
     if not key:
@@ -62,11 +72,13 @@ def find_best_nrfi_line(
     return (best_book, entry["odds"], entry.get("deeplink"))
 
 
-def fetch_nrfi_odds(game_date: str = None) -> List[Dict]:
+def fetch_nrfi_odds(game_date: str = None, include_completed: bool = False) -> List[Dict]:
     """Fetch NRFI/YRFI odds for all MLB games on a given date.
 
     Args:
         game_date: YYYY-MM-DD string. Defaults to today (UTC).
+        include_completed: If True, include games where odds are no longer
+            available (for fetching closing lines on completed games).
 
     Returns:
         List of dicts, one per game, with odds data including per-bookmaker
@@ -77,12 +89,13 @@ def fetch_nrfi_odds(game_date: str = None) -> List[Dict]:
 
     params = {
         "leagueID": "MLB",
-        "oddsAvailable": "true",
         "startsAfter": f"{game_date}T00:00:00Z",
         "startsBefore": f"{game_date}T23:59:59Z",
         "oddID": "points-all-1i-ou-over,points-all-1i-ou-under",
         "limit": 100,
     }
+    if not include_completed:
+        params["oddsAvailable"] = "true"
 
     all_events = []
     while True:
@@ -91,7 +104,7 @@ def fetch_nrfi_odds(game_date: str = None) -> List[Dict]:
             logger.error("Failed to fetch odds for %s", game_date)
             return []
 
-        events = data.get("events", [])
+        events = data.get("data", [])
         all_events.extend(events)
 
         next_cursor = data.get("nextCursor")
@@ -105,21 +118,36 @@ def fetch_nrfi_odds(game_date: str = None) -> List[Dict]:
         nrfi_raw = odds_data.get("points-all-1i-ou-under", {})
         yrfi_raw = odds_data.get("points-all-1i-ou-over", {})
 
-        # Extract bookmaker odds, filtering to available=True only
+        # Extract bookmaker odds, filtering to available=True only.
+        # Filter to overUnder=="0.5" to exclude alternate lines (e.g. 1.5).
         nrfi_odds = {}
         nrfi_details = {}  # includes deeplink for find_best_nrfi_line
         for book, info in nrfi_raw.get("byBookmaker", {}).items():
-            if info.get("available") is True:
-                nrfi_odds[book] = info.get("odds")
-                nrfi_details[book] = {
-                    "odds": info.get("odds"),
-                    "deeplink": info.get("deeplink"),
-                }
+            if info.get("available") is not True:
+                continue
+            if info.get("overUnder") is not None and str(info["overUnder"]) != "0.5":
+                continue
+            try:
+                odds_val = int(info["odds"])
+            except (ValueError, TypeError, KeyError):
+                continue
+            nrfi_odds[book] = odds_val
+            nrfi_details[book] = {
+                "odds": odds_val,
+                "deeplink": info.get("deeplink"),
+            }
 
         yrfi_odds = {}
         for book, info in yrfi_raw.get("byBookmaker", {}).items():
-            if info.get("available") is True:
-                yrfi_odds[book] = info.get("odds")
+            if info.get("available") is not True:
+                continue
+            if info.get("overUnder") is not None and str(info["overUnder"]) != "0.5":
+                continue
+            try:
+                odds_val = int(info["odds"])
+            except (ValueError, TypeError, KeyError):
+                continue
+            yrfi_odds[book] = odds_val
 
         # Best NRFI line
         best_nrfi_book = None
@@ -138,19 +166,16 @@ def fetch_nrfi_odds(game_date: str = None) -> List[Dict]:
                 all_deeplinks[book] = dl
 
         # Fair odds (vig-removed) and close odds (for CLV)
-        fair_odds_str = nrfi_raw.get("fairOdds")
-        fair_odds = int(fair_odds_str) if fair_odds_str else None
-
-        close_odds_str = nrfi_raw.get("closeBookOdds")
-        close_odds = int(close_odds_str) if close_odds_str else None
+        fair_odds = _parse_odds_str(nrfi_raw.get("fairOdds"))
+        close_odds = _parse_odds_str(
+            nrfi_raw.get("closeBookOdds") or nrfi_raw.get("closeFairOdds")
+        )
 
         # Pinnacle as sharp benchmark
         pinnacle_info = nrfi_raw.get("byBookmaker", {}).get("pinnacle", {})
-        pinnacle_odds = (
-            pinnacle_info.get("odds")
-            if pinnacle_info.get("available") is True
-            else None
-        )
+        pinnacle_odds = None
+        if pinnacle_info.get("available") is True:
+            pinnacle_odds = _parse_odds_str(pinnacle_info.get("odds"))
 
         teams = event.get("teams", {})
         results.append({

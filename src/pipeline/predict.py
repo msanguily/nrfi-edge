@@ -91,8 +91,10 @@ def get_marcel_weighted_rates(
     """
     Fetch up to 3 seasons of stats, apply Marcel multi-year weighting + shrinkage.
 
-    Returns a dict of shrunk outcome rates.
+    Returns a dict of shrunk outcome rates, or None if player has no stats.
     """
+    if player_id is None:
+        return None
     weights = [5, 4, 3]
     seasons = [current_season, current_season - 1, current_season - 2]
 
@@ -154,13 +156,15 @@ PLATOON_SHRINKAGE_CONSTANT = 500
 
 
 def get_best_split_rates(
-    player_id: int,
+    player_id,
     season: int,
     player_type: str,
     opponent_hand: str,
     db,
     overall_rates: Optional[dict] = None,
 ) -> Optional[dict]:
+    if player_id is None:
+        return None
     """
     Fetch platoon split rates for a player, shrunk toward overall rates.
 
@@ -390,17 +394,22 @@ def predict_nrfi(game_pk: int, supabase_client) -> Optional[dict]:
     )
 
     if not away_lineup_resp.data or not home_lineup_resp.data:
-        logger.warning('No confirmed lineups for game %d', game_pk)
-        return None
-
-    lineups_confirmed = bool(
-        away_lineup_resp.data[0].get('confirmed_at')
-        and home_lineup_resp.data[0].get('confirmed_at')
-    )
-
-    # Enrich lineup rows with batter handedness from players table
-    away_lineup = _enrich_lineup(away_lineup_resp.data, db)
-    home_lineup = _enrich_lineup(home_lineup_resp.data, db)
+        # No confirmed lineups — use placeholder "league average" batters
+        # so we can still generate a preliminary pitcher-based prediction
+        logger.info('No confirmed lineups for game %d — using league-average batters', game_pk)
+        placeholder = [{'mlb_player_id': None, 'batting_order': i, 'bats': 'R'}
+                       for i in range(1, 10)]
+        away_lineup = placeholder if not away_lineup_resp.data else _enrich_lineup(away_lineup_resp.data, db)
+        home_lineup = placeholder if not home_lineup_resp.data else _enrich_lineup(home_lineup_resp.data, db)
+        lineups_confirmed = False
+    else:
+        lineups_confirmed = bool(
+            away_lineup_resp.data[0].get('confirmed_at')
+            and home_lineup_resp.data[0].get('confirmed_at')
+        )
+        # Enrich lineup rows with batter handedness from players table
+        away_lineup = _enrich_lineup(away_lineup_resp.data, db)
+        home_lineup = _enrich_lineup(home_lineup_resp.data, db)
 
     # Park
     park = {}

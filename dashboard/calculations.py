@@ -132,8 +132,8 @@ STRONG_EDGE = 0.05   # 5% edge
 STRONG_PROB = 0.54   # 54% calibrated probability
 BET_EDGE = 0.03      # 3% minimum edge for any bet recommendation
 
-TIER_COLORS = {TIER_STRONG: "#FFD700", TIER_VALUE: "#00cc66", TIER_LEAN: "#4488ff"}
-TIER_LABELS = {TIER_STRONG: "Strong Pick", TIER_VALUE: "Value Play", TIER_LEAN: "Lean"}
+TIER_COLORS = {TIER_STRONG: "#fbbf24", TIER_VALUE: "#34d399", TIER_LEAN: "#60a5fa"}
+TIER_LABELS = {TIER_STRONG: "Strong", TIER_VALUE: "Value", TIER_LEAN: "Lean"}
 TIER_ORDER = {TIER_STRONG: 0, TIER_VALUE: 1, TIER_LEAN: 2, None: 3}
 
 

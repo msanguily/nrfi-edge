@@ -4,7 +4,29 @@ import math
 from datetime import datetime, date
 
 import plotly.graph_objects as go
+import plotly.io as pio
 import streamlit as st
+
+# ---------------------------------------------------------------------------
+# Custom Plotly theme matching the dashboard
+# ---------------------------------------------------------------------------
+_CHART_BG = "#0d1117"
+_CHART_GRID = "rgba(255,255,255,0.04)"
+_CHART_TEXT = "#8b949e"
+
+_chart_layout = dict(
+    paper_bgcolor=_CHART_BG,
+    plot_bgcolor=_CHART_BG,
+    font=dict(family="Inter, -apple-system, sans-serif", color=_CHART_TEXT, size=12),
+    title_font=dict(size=14, color="#c9d1d9"),
+)
+
+
+def _style_chart(fig):
+    """Apply consistent grid/axis styling to a Plotly figure."""
+    fig.update_xaxes(gridcolor=_CHART_GRID, zerolinecolor=_CHART_GRID)
+    fig.update_yaxes(gridcolor=_CHART_GRID, zerolinecolor=_CHART_GRID)
+    return fig
 
 from .calculations import (
     format_odds, format_prob, format_pl, format_edge, format_clv,
@@ -106,80 +128,168 @@ def render_bet_card(pred: dict, odds_by_game: dict = None, pitcher_rates: dict =
     game_time_str = _parse_utc_to_eastern(pred.get("game_time_utc"))
 
     with st.container(border=True):
-        st.markdown(f"### {matchup}")
+        # Result banner for completed games
+        result = pred.get("result")
+        if result is True:
+            st.markdown(
+                '<div style="background:linear-gradient(135deg,rgba(16,185,129,0.15),rgba(16,185,129,0.05));'
+                'border:1px solid rgba(16,185,129,0.3);border-radius:10px;'
+                'padding:8px 12px;margin-bottom:10px;text-align:center;">'
+                '<span style="color:#34d399;font-weight:700;font-size:0.85em;letter-spacing:0.05em;">'
+                '&#10003; NRFI &mdash; WIN</span></div>',
+                unsafe_allow_html=True,
+            )
+        elif result is False:
+            st.markdown(
+                '<div style="background:linear-gradient(135deg,rgba(239,68,68,0.15),rgba(239,68,68,0.05));'
+                'border:1px solid rgba(239,68,68,0.3);border-radius:10px;'
+                'padding:8px 12px;margin-bottom:10px;text-align:center;">'
+                '<span style="color:#f87171;font-weight:700;font-size:0.85em;letter-spacing:0.05em;">'
+                '&#10007; YRFI &mdash; LOSS</span></div>',
+                unsafe_allow_html=True,
+            )
+
+        # Matchup header + tier badge inline
+        tier_html = ""
         if tier:
             color = TIER_COLORS.get(tier, "#888")
             label = TIER_LABELS.get(tier, tier)
-            st.markdown(
+            tier_html = (
                 f'<span style="background:{color};color:#000;padding:2px 10px;'
-                f'border-radius:12px;font-size:0.8em;font-weight:600">'
-                f'{label}</span>',
-                unsafe_allow_html=True,
+                f'border-radius:20px;font-size:0.65em;font-weight:700;'
+                f'letter-spacing:0.03em;vertical-align:middle;margin-left:8px;">'
+                f'{label}</span>'
             )
-        if game_time_str:
-            st.caption(game_time_str)
+
+        st.markdown(
+            f'<div style="margin-bottom:2px;">'
+            f'<span style="font-size:1.15em;font-weight:700;color:#f0f6fc;">{matchup}</span>'
+            f'{tier_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if game_time_str and result is None:
+            st.caption(f"🕐 {game_time_str}")
+        elif game_time_str:
+            st.caption(f"{game_time_str} — Final")
 
         # Pitcher scoreless rates
         away_rate = (pitcher_rates or {}).get(pred.get("away_pitcher_id"), {})
         home_rate = (pitcher_rates or {}).get(pred.get("home_pitcher_id"), {})
 
-        away_nrfi = f"scoreless {away_rate['nrfi_rate']:.0%} of {away_rate['first_inn_starts']} starts" if away_rate else ""
-        home_nrfi = f"scoreless {home_rate['nrfi_rate']:.0%} of {home_rate['first_inn_starts']} starts" if home_rate else ""
+        # Pitcher info — compact with subtle styling
+        for pname, rate in [(pred['away_pitcher_name'], away_rate),
+                            (pred['home_pitcher_name'], home_rate)]:
+            if rate:
+                nrfi_pct = rate['nrfi_rate']
+                pct_color = "#34d399" if nrfi_pct >= 0.75 else "#fbbf24" if nrfi_pct >= 0.65 else "#f87171"
+                st.markdown(
+                    f'<div style="font-size:0.85em;margin:3px 0;">'
+                    f'<span style="font-weight:600;color:#e6edf3;">{pname}</span> '
+                    f'<span style="color:{pct_color};font-weight:600;">{nrfi_pct:.0%}</span>'
+                    f'<span style="color:#484f58;font-size:0.85em;"> scoreless ({rate["first_inn_starts"]} starts)</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'<div style="font-size:0.85em;margin:3px 0;">'
+                    f'<span style="font-weight:600;color:#e6edf3;">{pname}</span></div>',
+                    unsafe_allow_html=True,
+                )
 
-        st.markdown(f"**{pred['away_pitcher_name']}** {away_nrfi}")
-        st.markdown(f"**{pred['home_pitcher_name']}** {home_nrfi}")
-
-        # Model probability
+        # Model probability — hero number
         display_prob = _safe_prob(pred.get("p_nrfi_calibrated"), pred.get("p_nrfi_combined"))
 
         if display_prob is not None:
-            color = "#00cc66" if display_prob > 0.55 else "#ffaa00" if display_prob > 0.50 else "#ff4444"
-            st.markdown(f'<p style="font-size:2em; font-weight:bold; color:{color}; margin:0">'
-                        f'NRFI Chance: {display_prob:.1%}</p>', unsafe_allow_html=True)
+            color = "#10b981" if display_prob > 0.55 else "#f59e0b" if display_prob > 0.50 else "#ef4444"
+            glow = f"0 0 20px {color}30"
+            st.markdown(
+                f'<div style="margin:12px 0 8px 0;padding:10px 0;'
+                f'border-top:1px solid rgba(255,255,255,0.04);'
+                f'border-bottom:1px solid rgba(255,255,255,0.04);">'
+                f'<span style="font-size:0.7em;color:#6e7681;text-transform:uppercase;'
+                f'letter-spacing:0.08em;font-weight:500;">NRFI Probability</span><br>'
+                f'<span style="font-size:2em;font-weight:800;color:{color};'
+                f'letter-spacing:-0.03em;text-shadow:{glow};">'
+                f'{display_prob:.1%}</span></div>',
+                unsafe_allow_html=True,
+            )
 
-        # Best odds + sharpest book
-        col1, col2 = st.columns(2)
-        with col1:
-            if pred.get("best_book") and pred.get("best_nrfi_price"):
-                st.metric("Best Odds", f"{pred['best_book']} {format_odds(pred['best_nrfi_price'])}")
-            elif odds_list:
-                best = max(odds_list, key=lambda x: x.get("nrfi_decimal") or 0)
-                st.metric("Best Odds", f"{best['book']} {format_odds(best.get('nrfi_price'))}")
-            else:
-                st.metric("Best Odds", "No odds yet")
+        # Best odds + sharpest book — use markdown to avoid truncation
+        best_book_str = ""
+        if pred.get("best_book") and pred.get("best_nrfi_price"):
+            best_book_str = f"{pred['best_book']} {format_odds(pred['best_nrfi_price'])}"
+        elif odds_list:
+            best = max(odds_list, key=lambda x: x.get("nrfi_decimal") or 0)
+            best_book_str = f"{best['book']} {format_odds(best.get('nrfi_price'))}"
 
-        with col2:
-            pinnacle = [o for o in odds_list if "pinnacle" in (o.get("book") or "").lower()]
-            if pinnacle:
-                st.metric("Sharpest Book", format_odds(pinnacle[0].get("nrfi_price")))
-            elif pred.get("edge") is not None:
-                st.metric("Our Advantage", format_edge(pred["edge"]))
+        pinnacle_str = ""
+        pinnacle = [o for o in odds_list if "pinnacle" in (o.get("book") or "").lower()]
+        if pinnacle:
+            pinnacle_str = format_odds(pinnacle[0].get("nrfi_price"))
 
-        # Advantage & bet size
-        col3, col4 = st.columns(2)
-        with col3:
-            if pred.get("edge") is not None:
-                edge_val = float(pred["edge"]) * 100
-                st.metric("Our Advantage", f"{edge_val:.1f}%",
-                           help="How much higher our estimate is vs the sportsbook's odds")
-        with col4:
-            if pred.get("bet_size_units") is not None:
-                st.metric("Suggested Bet", f"{float(pred['bet_size_units']):.2f} units",
-                           help="Based on Kelly criterion (capped at 2% of bankroll)")
+        # Odds & edge — compact grid-style layout
+        details_html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0;">'
+        if best_book_str:
+            details_html += (
+                f'<span style="background:rgba(255,255,255,0.04);padding:4px 10px;'
+                f'border-radius:8px;font-size:0.8em;color:#c9d1d9;">'
+                f'📊 {best_book_str}</span>'
+            )
+        if pinnacle_str:
+            details_html += (
+                f'<span style="background:rgba(255,255,255,0.04);padding:4px 10px;'
+                f'border-radius:8px;font-size:0.8em;color:#8b949e;">'
+                f'Sharp {pinnacle_str}</span>'
+            )
+        if pred.get("edge") is not None:
+            edge_val = float(pred["edge"]) * 100
+            edge_color = "#10b981" if edge_val >= 5 else "#f59e0b"
+            details_html += (
+                f'<span style="background:rgba(16,185,129,0.1);padding:4px 10px;'
+                f'border-radius:8px;font-size:0.8em;color:{edge_color};font-weight:600;">'
+                f'Edge {edge_val:.1f}%</span>'
+            )
+        if pred.get("bet_size_units") is not None:
+            details_html += (
+                f'<span style="background:rgba(255,255,255,0.04);padding:4px 10px;'
+                f'border-radius:8px;font-size:0.8em;color:#8b949e;">'
+                f'Bet {float(pred["bet_size_units"]):.2f}u</span>'
+            )
+        details_html += '</div>'
+        st.markdown(details_html, unsafe_allow_html=True)
 
-        # Key factors
-        if pred.get("factor_details"):
-            fd = pred["factor_details"] if isinstance(pred["factor_details"], dict) else {}
-            factors = []
-            if fd.get("park_name"):
-                hr_label = _hr_factor_label(fd.get("park_hr_factor"))
-                factors.append(f"{fd['park_name']} \u2014 {hr_label}" if hr_label else fd["park_name"])
-            if fd.get("temperature_f"):
-                factors.append(f"{fd['temperature_f']}\u00b0F")
-            if fd.get("wind_speed_mph"):
-                factors.append(f"Wind: {fd['wind_speed_mph']} mph {fd.get('wind_relative', '')}")
-            if factors:
-                st.caption("Key factors: " + " | ".join(factors))
+        # Key factors — use park/weather from both factor_details and direct pred fields
+        factors = []
+        fd = pred.get("factor_details") if isinstance(pred.get("factor_details"), dict) else {}
+
+        # Park from factor_details or direct fields
+        park_name = pred.get("park_name") or (fd.get("park", {}).get("name") if isinstance(fd.get("park"), dict) else fd.get("park_name"))
+        hr_factor = pred.get("park_hr_factor") or (fd.get("park", {}).get("hr_factor") if isinstance(fd.get("park"), dict) else fd.get("park_hr_factor"))
+        if park_name:
+            hr_label = _hr_factor_label(hr_factor)
+            factors.append(f"{park_name}" + (f" ({hr_label})" if hr_label else ""))
+
+        # Temperature & wind from factor_details or weather
+        w = fd.get("weather", {}) if isinstance(fd.get("weather"), dict) else {}
+        temp = w.get("temp") or fd.get("temperature_f")
+        wind = w.get("wind_speed") or fd.get("wind_speed_mph")
+        wind_dir = w.get("wind_relative") or fd.get("wind_relative", "")
+        if temp is not None:
+            factors.append(f"{float(temp):.0f}\u00b0F")
+        if wind is not None:
+            factors.append(f"Wind {float(wind):.0f} mph {wind_dir}".strip())
+
+        if factors:
+            factors_html = ' <span style="color:#2d333b;">·</span> '.join(
+                f'<span style="color:#6e7681;font-size:0.78em;">{f}</span>' for f in factors
+            )
+            st.markdown(
+                f'<div style="margin-top:6px;padding-top:6px;'
+                f'border-top:1px solid rgba(255,255,255,0.04);">{factors_html}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +388,11 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
     df = pd.DataFrame(rows)
     if "Tier" in df.columns and df["Tier"].isna().all():
         df = df.drop(columns=["Tier"])
-    st.dataframe(df, width="stretch", hide_index=True)
+    # Drop less useful columns to fit screen width
+    for col in ["Game Total", "Sharpest Book", "Book's %"]:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
     # Expandable details per game
     for pred in predictions:
@@ -337,40 +451,56 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
                 st.markdown("**What's Driving This Prediction**")
                 fd = pred["factor_details"]
 
+                def _get(d, *keys, default=None):
+                    """Get value from dict trying multiple key formats (underscore and space)."""
+                    for k in keys:
+                        if k in d:
+                            return d[k]
+                        # Try with spaces instead of underscores
+                        k_space = k.replace("_", " ")
+                        if k_space in d:
+                            return d[k_space]
+                    return default
+
                 # Park info
-                if fd.get("park"):
-                    park = fd["park"]
-                    park_name = park.get("name", "Unknown")
-                    hr_label = _hr_factor_label(park.get("hr_factor"))
-                    dome = " (dome)" if park.get("is_dome") else ""
+                park_data = fd.get("park")
+                if park_data and isinstance(park_data, dict):
+                    park_name = _get(park_data, "name", default="Unknown")
+                    hr_label = _hr_factor_label(_get(park_data, "hr_factor"))
+                    dome = " (dome)" if _get(park_data, "is_dome") else ""
                     st.write(f"- **Park**: {park_name}{dome}" +
                              (f" — {hr_label}" if hr_label else ""))
 
                 # Weather
-                if fd.get("weather"):
-                    w = fd["weather"]
+                weather_data = fd.get("weather")
+                if weather_data and isinstance(weather_data, dict):
                     parts = []
-                    if w.get("temp") is not None:
-                        parts.append(f"{w['temp']:.0f}\u00b0F")
-                    if w.get("wind_speed") is not None:
-                        wind_dir = w.get("wind_relative", "")
-                        parts.append(f"Wind {w['wind_speed']:.0f} mph {wind_dir}".strip())
+                    temp = _get(weather_data, "temp", "temperature_f")
+                    wind = _get(weather_data, "wind_speed", "wind_speed_mph")
+                    wind_dir = _get(weather_data, "wind_relative", default="")
+                    if temp is not None:
+                        parts.append(f"{float(temp):.0f}\u00b0F")
+                    if wind is not None:
+                        parts.append(f"Wind {float(wind):.0f} mph {wind_dir}".strip())
                     if parts:
                         st.write(f"- **Weather**: {', '.join(parts)}")
 
                 # Pitchers — show name, K%, BB%, HR%
                 for role, key in [("Away Pitcher", "away_pitcher"), ("Home Pitcher", "home_pitcher")]:
                     p = fd.get(key)
-                    if not p:
+                    if not p or not isinstance(p, dict):
                         continue
-                    name = p.get("name", f"ID {p.get('id', '?')}")
+                    name = _get(p, "name", default=None) or f"ID {_get(p, 'id', default='?')}"
                     stats = []
-                    if p.get("k_rate") is not None:
-                        stats.append(f"K {p['k_rate']:.1%}")
-                    if p.get("bb_rate") is not None:
-                        stats.append(f"BB {p['bb_rate']:.1%}")
-                    if p.get("hr_rate") is not None:
-                        stats.append(f"HR {p['hr_rate']:.1%}")
+                    k_rate = _get(p, "k_rate")
+                    bb_rate = _get(p, "bb_rate")
+                    hr_rate = _get(p, "hr_rate")
+                    if k_rate is not None:
+                        stats.append(f"K {float(k_rate):.1%}")
+                    if bb_rate is not None:
+                        stats.append(f"BB {float(bb_rate):.1%}")
+                    if hr_rate is not None:
+                        stats.append(f"HR {float(hr_rate):.1%}")
                     st.write(f"- **{role}**: {name}" +
                              (f" ({', '.join(stats)})" if stats else ""))
 
@@ -382,27 +512,20 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
                         continue
                     batter_strs = []
                     for b in batters:
-                        name = b.get("name", f"#{b.get('id', '?')}")
-                        hr = f"HR {b['matchup_hr_rate']:.1%}" if b.get("matchup_hr_rate") is not None else ""
+                        if not isinstance(b, dict):
+                            continue
+                        name = _get(b, "name", default=None) or f"#{_get(b, 'id', default='?')}"
+                        hr_val = _get(b, "matchup_hr_rate")
+                        hr = f"HR {float(hr_val):.1%}" if hr_val is not None else ""
                         batter_strs.append(f"{name} ({hr})" if hr else name)
-                    st.write(f"- **{role}**: {', '.join(batter_strs)}")
+                    if batter_strs:
+                        st.write(f"- **{role}**: {', '.join(batter_strs)}")
 
                 # Adjustments applied
                 adj = fd.get("adjustments_applied")
                 if adj and isinstance(adj, list):
                     labels = [a.replace("_", " ").title() for a in adj]
                     st.write(f"- **Adjustments**: {', '.join(labels)}")
-
-                # Any remaining keys not handled above
-                _handled = {"park", "weather", "away_pitcher", "home_pitcher",
-                            "away_top4_batters", "home_top4_batters", "adjustments_applied"}
-                for key, val in fd.items():
-                    if key in _handled or val is None:
-                        continue
-                    label = key.replace("_", " ").title()
-                    if isinstance(val, (dict, list)):
-                        continue  # Skip complex leftovers to keep display clean
-                    st.write(f"- **{label}**: {val}")
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +538,8 @@ def render_cumulative_pl_chart(daily_pl: list):
         st.info("No profit/loss data available yet. Place bets to see results here.")
         return
 
+    from datetime import date as date_type
+
     cum_actual = 0.0
     cum_expected = 0.0
     dates = []
@@ -424,7 +549,11 @@ def render_cumulative_pl_chart(daily_pl: list):
     for day in daily_pl:
         cum_actual += day["pl"]
         cum_expected += day.get("expected_pl", 0.0)
-        dates.append(day["date"])
+        # Ensure dates are proper date objects for Plotly formatting
+        d = day["date"]
+        if isinstance(d, str):
+            d = date_type.fromisoformat(d)
+        dates.append(d)
         actuals.append(cum_actual)
         expecteds.append(cum_expected)
 
@@ -437,7 +566,7 @@ def render_cumulative_pl_chart(daily_pl: list):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=dates, y=actuals, mode="lines", name="Actual Profit/Loss",
-        line=dict(color="#1f77b4", width=2)
+        line=dict(color="#3b82f6", width=2)
     ))
     fig.add_trace(go.Scatter(
         x=dates, y=expecteds, mode="lines", name="Expected (based on advantage found)",
@@ -455,9 +584,11 @@ def render_cumulative_pl_chart(daily_pl: list):
     fig.update_layout(
         title="Running Profit/Loss Over Time",
         xaxis_title="Date", yaxis_title="Units",
-        template="plotly_dark", height=400,
+        **_chart_layout, height=400,
+        xaxis=dict(type="date", tickformat="%b %-d"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Blue line above gray dashed = running hot. Below = running cold. "
                "If both track together, the model is performing as expected.")
@@ -474,15 +605,17 @@ def render_profit_calendar(daily_pl: list, year: int = None, month: int = None):
     filtered = daily_pl
     if year and month:
         prefix = f"{year}-{month:02d}"
-        filtered = [d for d in daily_pl if d["date"].startswith(prefix)]
+        filtered = [d for d in daily_pl
+                    if (d["date"] if isinstance(d["date"], str) else d["date"].isoformat()).startswith(prefix)]
 
     if not filtered:
         st.info("No data for selected month.")
         return
 
-    pl_by_date = {d["date"]: d["pl"] for d in filtered}
+    pl_by_date = {(d["date"] if isinstance(d["date"], str) else d["date"].isoformat()): d["pl"]
+                  for d in filtered}
 
-    first = filtered[0]["date"]
+    first = filtered[0]["date"] if isinstance(filtered[0]["date"], str) else filtered[0]["date"].isoformat()
     if not year:
         year = int(first[:4])
     if not month:
@@ -518,9 +651,9 @@ def render_profit_calendar(daily_pl: list, year: int = None, month: int = None):
         textfont={"size": 10},
         x=["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
         colorscale=[
-            [0, "#cc0000"], [0.25, "#ff6666"],
-            [0.5, "#333333"],
-            [0.75, "#66cc66"], [1, "#00cc66"]
+            [0, "#ef4444"], [0.25, "#f87171"],
+            [0.5, "#1e293b"],
+            [0.75, "#34d399"], [1, "#10b981"]
         ],
         zmid=0,
         showscale=True,
@@ -530,10 +663,11 @@ def render_profit_calendar(daily_pl: list, year: int = None, month: int = None):
     month_name = calendar.month_name[month]
     fig.update_layout(
         title=f"Daily Results \u2014 {month_name} {year}",
-        template="plotly_dark", height=250,
+        **_chart_layout, height=250,
         yaxis=dict(autorange="reversed", showticklabels=False),
         xaxis=dict(side="top"),
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Green = winning day, Red = losing day, Gray = no bets")
 
@@ -544,21 +678,31 @@ def render_monthly_pl_bars(daily_pl: list):
         st.info("No data for monthly chart.")
         return
 
+    import calendar as cal_mod
+
     monthly = {}
     for d in daily_pl:
-        month_key = d["date"][:7]
+        d_str = d["date"] if isinstance(d["date"], str) else d["date"].isoformat()
+        month_key = d_str[:7]
         monthly[month_key] = monthly.get(month_key, 0.0) + d["pl"]
 
     months = sorted(monthly.keys())
+    # Format month labels nicely: "2026-04" -> "Apr 2026"
+    month_labels = []
+    for m in months:
+        y, mo = m.split("-")
+        month_labels.append(f"{cal_mod.month_abbr[int(mo)]} {y}")
     values = [monthly[m] for m in months]
-    colors = ["#00cc66" if v >= 0 else "#cc0000" for v in values]
+    colors = ["#10b981" if v >= 0 else "#ef4444" for v in values]
 
-    fig = go.Figure(go.Bar(x=months, y=values, marker_color=colors))
+    fig = go.Figure(go.Bar(x=month_labels, y=values, marker_color=colors))
     fig.update_layout(
         title="Monthly Profit/Loss",
         xaxis_title="Month", yaxis_title="Units",
-        template="plotly_dark", height=350,
+        **_chart_layout, height=350,
+        xaxis=dict(type="category"),
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -614,7 +758,7 @@ def render_accuracy_chart(predictions: list):
     fig.add_trace(go.Scatter(
         x=pred_means, y=actual_means,
         mode="lines+markers", name="Our model",
-        line=dict(color="#00cc66", width=2),
+        line=dict(color="#10b981", width=2),
         marker=dict(size=8),
         text=[f"{c:,} games" for c in counts],
         hovertemplate="We predicted: %{x:.1%}<br>Actually happened: %{y:.1%}<br>%{text}"
@@ -623,9 +767,10 @@ def render_accuracy_chart(predictions: list):
     fig.update_layout(
         title=f"Prediction Accuracy Check ({len(probs):,} games)",
         xaxis_title="What We Predicted", yaxis_title="What Actually Happened",
-        template="plotly_dark", height=400,
+        **_chart_layout, height=400,
         xaxis=dict(tickformat=".0%"), yaxis=dict(tickformat=".0%"),
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("If the green line follows the dashed gray line, the model is accurate. "
                "Points above the line = model underestimates NRFI. Below = overestimates.")
@@ -676,9 +821,10 @@ def render_model_vs_pinnacle(predictions: list, odds_data: list):
     fig.update_layout(
         title="Our Model vs Sharpest Sportsbook (Pinnacle)",
         xaxis_title="Our NRFI Estimate", yaxis_title="Pinnacle's NRFI Estimate",
-        template="plotly_dark", height=400,
+        **_chart_layout, height=400,
         xaxis=dict(tickformat=".0%"), yaxis=dict(tickformat=".0%"),
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Points above the diagonal = we think NRFI is less likely than Pinnacle. "
                "Below = we think NRFI is more likely (potential value).")
@@ -695,7 +841,7 @@ def render_clv_histogram(bets: list):
     mean_clv = np.mean(clvs)
 
     fig = go.Figure()
-    fig.add_trace(go.Histogram(x=clvs, nbinsx=30, marker_color="#00cc66", opacity=0.7))
+    fig.add_trace(go.Histogram(x=clvs, nbinsx=30, marker_color="#10b981", opacity=0.7))
     fig.add_vline(x=mean_clv, line_dash="dash", line_color="#ffaa00",
                   annotation_text=f"Average: {mean_clv:+.1f}%")
     fig.add_vline(x=0, line_dash="dot", line_color="#888888")
@@ -703,8 +849,9 @@ def render_clv_histogram(bets: list):
     fig.update_layout(
         title="Line Value Distribution",
         xaxis_title="Line Value (%)", yaxis_title="Number of Bets",
-        template="plotly_dark", height=350,
+        **_chart_layout, height=350,
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Line Value = did we bet at better odds than the final odds before game start? "
                "Positive average = consistently finding value. This is the #1 predictor of long-term profit.")
@@ -721,15 +868,16 @@ def render_edge_histogram(bets: list):
     mean_edge = np.mean(edges)
 
     fig = go.Figure()
-    fig.add_trace(go.Histogram(x=edges, nbinsx=30, marker_color="#1f77b4", opacity=0.7))
+    fig.add_trace(go.Histogram(x=edges, nbinsx=30, marker_color="#3b82f6", opacity=0.7))
     fig.add_vline(x=mean_edge, line_dash="dash", line_color="#ffaa00",
                   annotation_text=f"Average: {mean_edge:.1f}%")
 
     fig.update_layout(
         title="Advantage Distribution",
         xaxis_title="Advantage Over Sportsbook (%)", yaxis_title="Number of Bets",
-        template="plotly_dark", height=350,
+        **_chart_layout, height=350,
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("How much value the model found on each bet. Higher = more value.")
 
@@ -831,7 +979,7 @@ def render_backtest_season_chart(backtest_results: dict):
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=seasons, y=nrfi_rates, name="What Actually Happened",
-                         marker_color="#1f77b4", opacity=0.7))
+                         marker_color="#3b82f6", opacity=0.7))
     fig.add_trace(go.Scatter(x=seasons, y=mean_preds, name="What We Predicted",
                              mode="lines+markers", line=dict(color="#00cc66", width=2)))
 
@@ -842,10 +990,11 @@ def render_backtest_season_chart(backtest_results: dict):
     fig.update_layout(
         title="Season-by-Season: Predicted vs Actual NRFI Rate",
         xaxis_title="Season", yaxis_title="NRFI Rate (%)",
-        template="plotly_dark", height=350,
+        **_chart_layout, height=350,
         yaxis=dict(range=[y_min, y_max]),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("The green line should track the blue bars closely. "
                "If the model is accurate, predicted and actual NRFI rates match each year.")
@@ -886,7 +1035,7 @@ def render_rolling_accuracy(predictions: list, window: int = 500):
     fig.add_trace(go.Scatter(
         x=rolling_dates, y=rolling_brier.tolist(),
         mode="lines", name=f"Model ({window}-game rolling)",
-        line=dict(color="#00cc66", width=2),
+        line=dict(color="#10b981", width=2),
     ))
     # Only show separate coin-flip line if it's visually distinct from no-skill
     if abs(no_skill - 0.25) > 0.002:
@@ -901,9 +1050,10 @@ def render_rolling_accuracy(predictions: list, window: int = 500):
     fig.update_layout(
         title=f"Is the Model's Accuracy Stable Over Time? ({window}-game rolling window)",
         xaxis_title="Date", yaxis_title="Accuracy Score (lower = better)",
-        template="plotly_dark", height=400,
+        **_chart_layout, height=400,
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Green line should stay BELOW the red dashed line (the no-skill baseline). "
                "If the green line rises above it, the model is performing worse than always guessing the average. "
@@ -928,7 +1078,7 @@ def render_prediction_distribution(predictions: list):
     mean_val = np.mean(probs)
 
     fig = go.Figure()
-    fig.add_trace(go.Histogram(x=probs, nbinsx=50, marker_color="#1f77b4", opacity=0.7))
+    fig.add_trace(go.Histogram(x=probs, nbinsx=50, marker_color="#3b82f6", opacity=0.7))
 
     # Avoid overlapping annotations when mean is close to 50%
     if abs(mean_val - 50.0) < 1.5:
@@ -945,8 +1095,9 @@ def render_prediction_distribution(predictions: list):
     fig.update_layout(
         title=f"How Predictions Are Spread Out ({len(probs):,} games)",
         xaxis_title="NRFI Chance (%)", yaxis_title="Number of Games",
-        template="plotly_dark", height=350,
+        **_chart_layout, height=350,
     )
+    _style_chart(fig)
     st.plotly_chart(fig, use_container_width=True)
     st.caption("A wider spread means the model is differentiating games well. "
                "If everything clustered at 50%, the model wouldn't be useful.")
@@ -1064,7 +1215,8 @@ def render_tier_performance(bets: list):
             marker_line=dict(width=2, color=colors),
         ))
         fig.update_layout(
-            barmode="group", template="plotly_dark", height=320,
+            barmode="group", **_chart_layout, height=320,
             yaxis_title="%", legend=dict(orientation="h", y=1.12),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        _style_chart(fig)
+    st.plotly_chart(fig, use_container_width=True)

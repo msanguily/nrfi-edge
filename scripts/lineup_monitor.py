@@ -149,48 +149,53 @@ def run():
         try:
             # Check MLB API for confirmed lineups
             lineups = get_confirmed_lineups(game_pk)
-            if lineups is None:
-                logger.debug("API failure for game %d lineups", game_pk)
-                continue
+            has_confirmed_lineup = False
 
-            home_ids = lineups.get("home")
-            away_ids = lineups.get("away")
+            if lineups is not None:
+                home_ids = lineups.get("home")
+                away_ids = lineups.get("away")
 
-            # Both lineups must be confirmed
-            if home_ids is None or away_ids is None:
-                logger.debug("Game %d: lineups not yet confirmed", game_pk)
-                continue
+                if (home_ids and away_ids
+                        and len(home_ids) >= 9 and len(away_ids) >= 9):
+                    has_confirmed_lineup = True
 
-            if len(home_ids) < 9 or len(away_ids) < 9:
-                logger.debug("Game %d: incomplete lineup (%d home, %d away)",
-                             game_pk, len(home_ids), len(away_ids))
-                continue
+                    # Check if lineup has changed from what we have stored
+                    old_home = get_existing_lineup(db, game_pk, game["home_team_id"])
+                    old_away = get_existing_lineup(db, game_pk, game["away_team_id"])
+                    home_changed = lineup_changed(old_home, home_ids)
+                    away_changed = lineup_changed(old_away, away_ids)
 
-            # Check if lineup has changed from what we have stored
-            old_home = get_existing_lineup(db, game_pk, game["home_team_id"])
-            old_away = get_existing_lineup(db, game_pk, game["away_team_id"])
-            home_changed = lineup_changed(old_home, home_ids)
-            away_changed = lineup_changed(old_away, away_ids)
+                    existing_pred = get_existing_prediction(db, game_pk)
 
-            existing_pred = get_existing_prediction(db, game_pk)
+                    if not home_changed and not away_changed and existing_pred is not None:
+                        logger.debug("Game %d: lineup unchanged, prediction exists — skipping", game_pk)
+                        continue
 
-            if not home_changed and not away_changed and existing_pred is not None:
-                logger.debug("Game %d: lineup unchanged, prediction exists — skipping", game_pk)
-                continue
+                    # New or changed lineup detected
+                    if home_changed or away_changed:
+                        logger.info("Game %d: %s lineup detected",
+                                    game_pk, "new" if existing_pred is None else "changed")
+                        new_lineups += 1
 
-            # New or changed lineup detected
-            if home_changed or away_changed:
-                logger.info("Game %d: %s lineup detected",
-                            game_pk, "new" if existing_pred is None else "changed")
-                new_lineups += 1
+                    # Store lineups
+                    if home_changed:
+                        store_lineup(db, game_pk, game["home_team_id"], home_ids)
+                    if away_changed:
+                        store_lineup(db, game_pk, game["away_team_id"], away_ids)
 
-            # Step a: Store lineups
-            if home_changed:
-                store_lineup(db, game_pk, game["home_team_id"], home_ids)
-            if away_changed:
-                store_lineup(db, game_pk, game["away_team_id"], away_ids)
+            # If no confirmed lineup, check if we already have a preliminary prediction
+            if not has_confirmed_lineup:
+                existing_pred = get_existing_prediction(db, game_pk)
+                if existing_pred is not None:
+                    logger.debug("Game %d: no lineup yet, preliminary prediction exists — skipping", game_pk)
+                    continue
+                # Must have pitchers to make even a preliminary prediction
+                if not game.get("home_pitcher_id") or not game.get("away_pitcher_id"):
+                    logger.debug("Game %d: no pitchers assigned — skipping", game_pk)
+                    continue
+                logger.info("Game %d: no lineup yet — generating preliminary prediction", game_pk)
 
-            # Step b: Fetch and store weather
+            # Fetch and store weather
             try:
                 weather = get_game_weather_for_prediction(game_pk, db)
                 store_weather(db, game_pk, weather)
@@ -198,8 +203,7 @@ def run():
                 logger.warning("Weather fetch failed for game %d:\n%s",
                                game_pk, traceback.format_exc())
 
-            # Steps c+d: predict_nrfi reads odds from DB (already refreshed above)
-            # and reads weather from weather_snapshots (just stored)
+            # Run prediction (works with or without confirmed lineups)
             try:
                 result = predict_nrfi(game_pk, db)
                 if result is not None:
@@ -207,11 +211,12 @@ def run():
                     if result.get("bet_recommended"):
                         bets_recommended += 1
                     logger.info(
-                        "Game %d: P(NRFI)=%.3f, edge=%s, bet=%s",
+                        "Game %d: P(NRFI)=%.3f, edge=%s, bet=%s%s",
                         game_pk,
                         result["p_nrfi_calibrated"],
                         f'{result["edge"]:.3f}' if result.get("edge") is not None else "N/A",
                         result.get("bet_recommended", False),
+                        "" if has_confirmed_lineup else " [preliminary]",
                     )
                 else:
                     logger.warning("Game %d: predict_nrfi returned None", game_pk)

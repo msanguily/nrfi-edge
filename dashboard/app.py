@@ -2,12 +2,16 @@
 
 import os
 import sys
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 
 import pytz
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+
+# Suppress Plotly config deprecation warnings from Streamlit internals
+warnings.filterwarnings("ignore", message=".*keyword arguments have been deprecated.*")
 
 # Ensure project root is on path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -46,6 +50,212 @@ st.set_page_config(
 
 # Auto-refresh every 60s
 st_autorefresh(interval=60000, key="refresh")
+
+# Suppress Plotly deprecation warnings rendered in UI
+try:
+    from streamlit.deprecation_util import show_deprecation_warning as _orig_sdw
+    import streamlit.deprecation_util
+    def _silent_deprecation_warning(msg):
+        if "keyword arguments" in msg and "config" in msg:
+            return
+        _orig_sdw(msg)
+    streamlit.deprecation_util.show_deprecation_warning = _silent_deprecation_warning
+    # Also patch in the plotly_chart module
+    import streamlit.elements.plotly_chart
+    streamlit.elements.plotly_chart.show_deprecation_warning = _silent_deprecation_warning
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
+# Global CSS — Modern dark theme with glassmorphism and clean typography
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+/* ================================================================
+   MODERN DARK THEME — 2026 Dashboard Design System
+   Background layers: #0a0e14 → #111827 → #1a1f2e
+   Accent: #10b981 (emerald) with #059669 hover
+   ================================================================ */
+
+/* ---- Base typography ---- */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+/* ---- Main background ---- */
+.stApp, [data-testid="stAppViewContainer"] {
+    background: linear-gradient(180deg, #0a0e14 0%, #0d1117 100%) !important;
+}
+.main .block-container {
+    padding-top: 2rem !important;
+    max-width: 1200px;
+}
+
+/* ---- Metric cards — clean, no-truncate ---- */
+[data-testid="stMetricValue"] {
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    font-size: clamp(1.1rem, 2.5vw, 1.7rem) !important;
+    font-weight: 700 !important;
+    color: #f0f6fc !important;
+    letter-spacing: -0.02em;
+}
+[data-testid="stMetricLabel"] {
+    white-space: nowrap !important;
+    overflow: visible !important;
+    font-size: 0.8rem !important;
+    font-weight: 500 !important;
+    color: #8b949e !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+[data-testid="stMetricDelta"] {
+    white-space: nowrap !important;
+    overflow: visible !important;
+    font-size: 0.78rem !important;
+}
+
+/* ---- Glassmorphism cards ---- */
+[data-testid="stVerticalBlock"] > div[data-testid="stContainer"] {
+    background: rgba(17, 24, 39, 0.7) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 16px !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    padding: 4px !important;
+}
+[data-testid="stVerticalBlock"] > div[data-testid="stContainer"]:hover {
+    transform: translateY(-3px);
+    border-color: rgba(16, 185, 129, 0.3) !important;
+    box-shadow: 0 8px 32px rgba(16, 185, 129, 0.08),
+                0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- Sidebar ---- */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0d1117 0%, #0a0e14 100%) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+section[data-testid="stSidebar"] [data-testid="stMetricValue"] {
+    font-size: clamp(0.9rem, 2vw, 1.4rem) !important;
+}
+section[data-testid="stSidebar"] h1 {
+    font-size: 1.15rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.03em;
+    color: #e6edf3 !important;
+}
+section[data-testid="stSidebar"] h3 {
+    font-size: 0.7rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #484f58 !important;
+    margin-top: 0.3rem !important;
+    margin-bottom: 0.5rem !important;
+}
+
+/* ---- Radio nav pills ---- */
+div[data-testid="stRadio"] label {
+    border-radius: 10px !important;
+    padding: 6px 12px !important;
+    transition: background 0.15s ease;
+}
+div[data-testid="stRadio"] label:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+/* ---- Page titles ---- */
+h1 {
+    font-weight: 700 !important;
+    letter-spacing: -0.03em;
+    color: #f0f6fc !important;
+}
+h2 {
+    font-weight: 600 !important;
+    letter-spacing: -0.02em;
+    color: #e6edf3 !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding-bottom: 0.5rem;
+}
+h3 {
+    font-weight: 600 !important;
+    color: #c9d1d9 !important;
+    font-size: 1.1rem !important;
+}
+
+/* ---- Dividers ---- */
+hr {
+    border: none !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+    margin: 1.5rem 0 !important;
+}
+
+/* ---- Expanders ---- */
+details {
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 12px !important;
+    background: rgba(17, 24, 39, 0.4) !important;
+    margin-bottom: 6px !important;
+}
+details summary {
+    font-weight: 500;
+    padding: 10px 16px !important;
+}
+details summary:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+/* ---- Dataframes ---- */
+[data-testid="stDataFrame"] {
+    width: 100% !important;
+    border-radius: 12px !important;
+    overflow: hidden;
+}
+
+/* ---- Buttons ---- */
+.stDownloadButton > button {
+    background: rgba(16, 185, 129, 0.1) !important;
+    border: 1px solid rgba(16, 185, 129, 0.3) !important;
+    color: #10b981 !important;
+    border-radius: 10px !important;
+    font-weight: 500 !important;
+    transition: all 0.15s ease;
+}
+.stDownloadButton > button:hover {
+    background: rgba(16, 185, 129, 0.2) !important;
+    border-color: #10b981 !important;
+}
+
+/* ---- Inputs (date, select, slider) ---- */
+[data-testid="stDateInput"] input,
+.stSelectbox > div > div,
+.stSlider {
+    border-radius: 10px !important;
+}
+
+/* ---- Captions ---- */
+[data-testid="stCaptionContainer"] {
+    color: #6e7681 !important;
+    font-size: 0.82rem !important;
+}
+
+/* ---- Plotly charts — consistent corners ---- */
+[data-testid="stPlotlyChart"] {
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+/* ---- Hide Streamlit chrome ---- */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header[data-testid="stHeader"] {
+    background: transparent !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Data status
@@ -110,30 +320,41 @@ state = "live" if has_live_today else "backtest"
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
-header_cols = st.columns([4, 1, 1, 1])
-with header_cols[0]:
-    st.title("NRFI Edge System")
-with header_cols[1]:
-    st.caption(f"Version: **{model_version}**")
-with header_cols[2]:
-    def _dot(ok):
-        return "🟢" if ok else "🔴"
-    st.caption(f"Predictions {_dot(predictions_count > 0)} | Odds {_dot(odds_count > 0)}")
-with header_cols[3]:
-    now_et = datetime.now(EASTERN)
-    st.caption(f"Updated: {now_et.strftime('%-I:%M %p ET')}")
+now_et = datetime.now(EASTERN)
+
+def _status_dot(ok):
+    color = "#10b981" if ok else "#ef4444"
+    return f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{color};margin-right:4px;vertical-align:middle;box-shadow:0 0 6px {color}40;"></span>'
+
+st.markdown(
+    f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">'
+    f'<h1 style="margin:0;padding:0;font-size:1.8rem;border:none;">NRFI Edge</h1>'
+    f'<div style="display:flex;align-items:center;gap:16px;font-size:0.78rem;color:#6e7681;">'
+    f'<span style="background:rgba(16,185,129,0.1);color:#10b981;padding:3px 10px;border-radius:20px;'
+    f'font-weight:600;font-size:0.72rem;border:1px solid rgba(16,185,129,0.2);">v{model_version}</span>'
+    f'<span>{_status_dot(predictions_count > 0)}Predictions</span>'
+    f'<span>{_status_dot(odds_count > 0)}Odds</span>'
+    f'<span style="color:#484f58;">{now_et.strftime("%-I:%M %p ET")}</span>'
+    f'</div></div>',
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
-st.sidebar.title("Navigation")
+st.sidebar.markdown(
+    '<p style="font-size:0.7rem;font-weight:600;letter-spacing:0.1em;'
+    'text-transform:uppercase;color:#484f58;margin-bottom:0.5rem;">NAVIGATION</p>',
+    unsafe_allow_html=True,
+)
 page = st.sidebar.radio(
     "Page",
     ["Today's Picks", "Performance", "Model Accuracy", "Bet History"],
     label_visibility="collapsed",
 )
 
-st.sidebar.divider()
+st.sidebar.markdown('<div style="margin:0.5rem 0;border-top:1px solid rgba(255,255,255,0.04);"></div>',
+                     unsafe_allow_html=True)
 
 if state == "backtest":
     st.sidebar.markdown("### Historical Test Mode")
@@ -182,8 +403,13 @@ else:
     today_wins = sum(1 for p in today_bets if p.get("result") is True)
     today_losses = sum(1 for p in today_bets if p.get("result") is False)
 
-    st.sidebar.metric("Bets Placed Today", len(today_bets))
-    st.sidebar.metric("Record", f"{today_wins}W - {today_losses}L")
+    st.sidebar.metric("Bets Today", len(today_bets))
+
+    # Season record instead of just today's
+    s_wins = season_stats.get("wins", 0)
+    s_losses = season_stats.get("losses", 0)
+    st.sidebar.metric("Season Record", f"{s_wins}W - {s_losses}L",
+                       delta=f"Today: {today_wins}W {today_losses}L" if (today_wins + today_losses) > 0 else None)
 
     today_pl = 0.0
     for b in today_bets:
@@ -191,7 +417,7 @@ else:
             units = float(b["bet_size_units"]) if b.get("bet_size_units") else 1.0
             today_pl += calculate_profit(int(b["best_nrfi_price"]), units, b["result"])
     pl_color = "normal" if today_pl >= 0 else "inverse"
-    st.sidebar.metric("Today's Profit/Loss", format_pl(today_pl),
+    st.sidebar.metric("Today's P/L", format_pl(today_pl),
                        delta=f"{today_wins}W {today_losses}L", delta_color=pl_color)
 
     if season_stats.get("total_bets", 0) > 0:
@@ -200,9 +426,11 @@ else:
         st.sidebar.metric("Season Profit/Loss", format_pl(season_stats.get("total_pl", 0)),
                            delta=f"{season_stats.get('roi', 0):.1f}% return", delta_color="normal")
         clv_rate = season_stats.get("clv_beat_rate", 0)
-        st.sidebar.metric("Beating the Market?",
-                           f"{clv_rate:.0f}% of the time" if clv_rate else "No data yet")
-        st.sidebar.caption("Above 50% = consistently finding value before odds move")
+        st.sidebar.metric("Beat Market",
+                           f"{clv_rate:.0f}%" if clv_rate else "N/A",
+                           delta="beating closing line" if clv_rate and clv_rate > 50 else None,
+                           delta_color="normal" if clv_rate and clv_rate > 50 else "off")
+        st.sidebar.caption("Above 50% = finding value before odds move")
         streak = current_streak(season_stats.get("results_list", []))
         st.sidebar.metric("Current Streak", streak)
 
@@ -278,9 +506,7 @@ if page == "Today's Picks":
                 parts.append(f"**{len(lean)} Lean**")
             st.caption(" \u00b7 ".join(parts) if parts else "No picks meet minimum threshold")
 
-            top_picks = (strong + value)[:4]
-            if not top_picks:
-                top_picks = lean[:4]
+            top_picks = (strong + value + lean)[:4]
             n_cols = min(len(top_picks), 4)
             cols = st.columns(n_cols)
             for i, pred in enumerate(top_picks):
@@ -306,17 +532,20 @@ elif page == "Performance":
     daily_pl = get_daily_pl()
 
     if season_stats.get("total_bets", 0) > 0:
-        # Key metrics row
-        m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
-        m1.metric("Total Bets", season_stats["total_bets"])
+        # Key metrics — two rows of 4 for readability
         total_decided = season_stats["wins"] + season_stats["losses"]
         wr = (season_stats["wins"] / total_decided * 100) if total_decided > 0 else 0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Bets", season_stats["total_bets"])
         m2.metric("Win Rate", f"{wr:.1f}%")
         m3.metric("Profit/Loss", format_pl(season_stats["total_pl"]))
-        m4.metric("Return on Investment", f"{season_stats['roi']:.1f}%")
+        m4.metric("ROI", f"{season_stats['roi']:.1f}%")
+
+        m5, m6, m7, m8 = st.columns(4)
         m5.metric("Avg Advantage", f"{season_stats['avg_edge'] * 100:.1f}%")
         m6.metric("Avg Line Value", f"{season_stats['avg_clv'] * 100:+.1f}%")
-        m7.metric("Beat Market %", f"{season_stats['clv_beat_rate']:.1f}%")
+        m7.metric("Beat Market", f"{season_stats['clv_beat_rate']:.0f}%")
         m8.metric("Streak", current_streak(season_stats.get("results_list", [])))
 
         st.divider()
@@ -409,7 +638,7 @@ elif page == "Model Accuracy":
 
         with col1:
             st.markdown(f"### Overall ({year_range})")
-            st.metric("Version", backtest.get("model_version", "unknown"))
+            st.metric("Version", model_version)
             st.metric("Games Tested", f"{backtest.get('games_predicted', 0):,}")
 
             raw = backtest.get("raw_metrics", {})
@@ -453,7 +682,7 @@ elif page == "Model Accuracy":
             cal_bss = cal.get("brier_skill", 0)
             improvement = cal_bss - raw_bss
             c2.metric("vs Coin Flip", f"{cal_bss:+.4f}",
-                       delta=f"{improvement:+.4f} from correction",
+                       delta=f"{improvement:+.4f}",
                        delta_color="normal")
             c3.metric("Cal. Error", f"{cal.get('ece', 0):.4f}",
                        help="Calibration Error")
@@ -643,14 +872,16 @@ elif page == "Bet History":
         has_betting_data = total_wagered > 0
 
         if has_betting_data:
-            s1, s2, s3, s4, s5, s6 = st.columns(6)
+            s1, s2, s3 = st.columns(3)
             s1.metric("Games", f"{total:,}")
-            s2.metric("Record", f"{wins}W-{losses}L" + (f"-{pending}P" if pending else ""))
-            s3.metric("Profit/Loss", format_pl(total_pl))
+            s2.metric("Record", f"{wins}W - {losses}L" + (f" - {pending}P" if pending else ""))
             roi = calculate_roi(total_pl, total_wagered)
-            s4.metric("Return", f"{roi:.1f}%")
-            s5.metric("Avg Advantage", f"{sum(edges) / len(edges) * 100:.1f}%" if edges else "N/A")
-            s6.metric("Avg Line Value", f"{sum(clvs) / len(clvs) * 100:+.1f}%" if clvs else "N/A")
+            s3.metric("Profit/Loss", format_pl(total_pl), delta=f"{roi:.1f}% ROI", delta_color="normal")
+
+            s4, s5, s6 = st.columns(3)
+            s4.metric("Avg Advantage", f"{sum(edges) / len(edges) * 100:.1f}%" if edges else "N/A")
+            s5.metric("Avg Line Value", f"{sum(clvs) / len(clvs) * 100:+.1f}%" if clvs else "N/A")
+            s6.metric("Win Rate", f"{wins / (wins + losses) * 100:.1f}%" if (wins + losses) > 0 else "N/A")
         else:
             # Backtest mode — show model performance stats instead of betting stats
             decided = wins + losses
@@ -701,9 +932,8 @@ elif page == "Bet History":
             row = {
                 "Date": h.get("game_date", ""),
                 "Matchup": f"{h['away_team']} @ {h['home_team']}",
-                "Away Pitcher": h.get("away_pitcher_name", ""),
-                "Home Pitcher": h.get("home_pitcher_name", ""),
-                "NRFI Chance": format_prob(display_prob),
+                "Pitchers": f"{h.get('away_pitcher_name', '?')} vs {h.get('home_pitcher_name', '?')}",
+                "NRFI %": format_prob(display_prob),
             }
 
             # Only include betting columns when we have actual odds data
@@ -714,19 +944,17 @@ elif page == "Bet History":
                     units = float(h["bet_size_units"]) if h.get("bet_size_units") else 1.0
                     pl = calculate_profit(int(h["best_nrfi_price"]), units, h["result"])
                 row.update({
-                    "Best Odds": f"{h['best_book']} {format_odds(h['best_nrfi_price'])}" if h.get("best_book") else "-",
-                    "Book's %": format_prob(h.get("implied_prob_best")),
-                    "Advantage": format_edge(h.get("edge")),
-                    "Bet Size": f"{float(h['bet_size_units']):.2f}u" if h.get("bet_size_units") else "-",
-                    "Line Value": format_clv(h.get("clv")),
-                    "Profit/Loss": format_pl(pl) if pl is not None else "-",
+                    "Odds": f"{h['best_book']} {format_odds(h['best_nrfi_price'])}" if h.get("best_book") else "-",
+                    "Edge": format_edge(h.get("edge")),
+                    "CLV": format_clv(h.get("clv")),
+                    "P/L": format_pl(pl) if pl is not None else "-",
                 })
 
             row["Result"] = result_str
             rows.append(row)
 
         df = pd.DataFrame(rows)
-        st.dataframe(df, width="stretch", hide_index=True, height=600)
+        st.dataframe(df, use_container_width=True, hide_index=True, height=600)
 
         csv = df.to_csv(index=False)
         st.download_button("Download as CSV", csv, "nrfi_history.csv", "text/csv")

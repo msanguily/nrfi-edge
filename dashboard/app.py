@@ -35,7 +35,7 @@ from dashboard.components import (
     render_bookmaker_table, render_backtest_accuracy,
     render_backtest_season_chart, render_prediction_distribution,
     render_high_confidence_table, render_rolling_accuracy,
-    render_tier_performance,
+    render_tier_performance, render_daily_log,
 )
 
 # ---------------------------------------------------------------------------
@@ -289,17 +289,22 @@ if _per_season:
 else:
     year_range = "historical"
 
-today = date.today()
+def _today_et():
+    """Current date in US/Eastern. Called fresh on each cache miss."""
+    return datetime.now(pytz.timezone("US/Eastern")).date()
+
+
+today = _today_et()
 
 
 @st.cache_data(ttl=30)  # Fast refresh: live predictions update throughout the day
-def load_today():
-    return get_todays_predictions(today)
+def load_today(_date_key):
+    return get_todays_predictions(_today_et())
 
 
 @st.cache_data(ttl=30)  # Fast refresh: odds move frequently during game day
-def load_today_odds():
-    return get_todays_odds(today)
+def load_today_odds(_date_key):
+    return get_todays_odds(_today_et())
 
 
 @st.cache_data(ttl=60)  # Medium refresh: season aggregates change only when games finish
@@ -307,15 +312,19 @@ def load_season_stats():
     return get_season_stats()
 
 
-today_preds = load_today()
-today_odds = load_today_odds()
+today = _today_et()  # Refresh on every Streamlit rerun (auto-refresh every 60s)
+today_preds = load_today(today)
+today_odds = load_today_odds(today)
 
 has_live_today = any(
     "backtest" not in (p.get("model_version") or "")
     for p in today_preds
+    if p.get("model_version")  # skip games without predictions yet
 ) if today_preds else False
 
-state = "live" if has_live_today else "backtest"
+# If there are games scheduled today (even without predictions), treat as live
+has_games_today = bool(today_preds)
+state = "live" if (has_live_today or has_games_today) else "backtest"
 
 # ---------------------------------------------------------------------------
 # Header
@@ -356,83 +365,103 @@ page = st.sidebar.radio(
 st.sidebar.markdown('<div style="margin:0.5rem 0;border-top:1px solid rgba(255,255,255,0.04);"></div>',
                      unsafe_allow_html=True)
 
-if state == "backtest":
-    st.sidebar.markdown("### Historical Test Mode")
-    st.sidebar.caption(f"No live bets yet. Showing analysis of {year_range} data.")
-    st.sidebar.metric("Games Analyzed", f"{predictions_count:,}")
-    st.sidebar.metric("Version", model_version)
+# Always load season stats for the sidebar
+season_stats = load_season_stats()
 
-    if backtest:
-        # Dynamically find test year calibrated data
-        _sidebar_cal_key = next(
-            (k for k in backtest if k.startswith("test_") and k.endswith("_calibrated")),
-            "test_2025_calibrated"
-        )
-        cal = backtest.get(_sidebar_cal_key, {})
-        # Explain Brier Skill in plain terms
-        bss = cal.get("brier_skill", 0)
-        if bss > 0:
-            st.sidebar.metric("Beats Coin Flip?", "Yes",
-                               delta=f"+{bss:.4f} accuracy", delta_color="normal")
-        else:
-            st.sidebar.metric("Beats Coin Flip?", "Marginal",
-                               delta=f"{bss:.4f}", delta_color="normal")
+# --- Season Record (always visible) ---
+st.sidebar.markdown("### Season Record")
+s_wins = season_stats.get("wins", 0)
+s_losses = season_stats.get("losses", 0)
+s_pending = season_stats.get("pending", 0)
+s_total = season_stats.get("total_bets", 0)
+s_decided = s_wins + s_losses
 
-        actual_rate = backtest.get("overall_nrfi_rate")
-        if actual_rate:
-            st.sidebar.metric("Actual NRFI Rate", f"{actual_rate:.1%}")
-
-    st.sidebar.divider()
-    st.sidebar.markdown("### Data Sources")
-    checks = {
-        "predictions": ("Predictions", predictions_count > 0),
-        "games": ("Games", status.get("games_count", 0) > 0 if not has_error else False),
-        "weather": ("Weather", status.get("weather_count", 0) > 0 if not has_error else False),
-        "pitcher_stats": ("Pitcher Stats", status.get("pitcher_stats_count", 0) > 0 if not has_error else False),
-        "odds": ("Odds", odds_count > 0),
-    }
-    for key, (label, ok) in checks.items():
-        count = status.get(f"{key}_count", 0) if not has_error else 0
-        st.sidebar.write(f"{'🟢' if ok else '🔴'} {label}: {count:,}")
-
+if s_decided > 0:
+    win_pct = s_wins / s_decided * 100
+    st.sidebar.metric("Record", f"{s_wins}W - {s_losses}L",
+                       delta=f"{win_pct:.1f}% win rate", delta_color="normal" if win_pct >= 50 else "inverse")
 else:
-    # Live mode sidebar
-    st.sidebar.markdown("### Today's Summary")
-    season_stats = load_season_stats()
-    today_bets = [p for p in today_preds if p.get("bet_recommended")]
-    today_wins = sum(1 for p in today_bets if p.get("result") is True)
-    today_losses = sum(1 for p in today_bets if p.get("result") is False)
+    st.sidebar.metric("Record", f"{s_wins}W - {s_losses}L")
 
-    st.sidebar.metric("Bets Today", len(today_bets))
+if s_pending > 0:
+    st.sidebar.caption(f"{s_pending} pending")
 
-    # Season record instead of just today's
-    s_wins = season_stats.get("wins", 0)
-    s_losses = season_stats.get("losses", 0)
-    st.sidebar.metric("Season Record", f"{s_wins}W - {s_losses}L",
-                       delta=f"Today: {today_wins}W {today_losses}L" if (today_wins + today_losses) > 0 else None)
+# P/L and ROI
+total_pl = season_stats.get("total_pl", 0)
+roi = season_stats.get("roi", 0)
+if s_total > 0:
+    pl_delta_color = "normal" if total_pl >= 0 else "inverse"
+    st.sidebar.metric("Profit / Loss", format_pl(total_pl),
+                       delta=f"{roi:.1f}% ROI" if s_decided > 0 else None,
+                       delta_color=pl_delta_color)
 
+# Avg edge and CLV
+avg_edge = season_stats.get("avg_edge", 0)
+avg_clv = season_stats.get("avg_clv", 0)
+clv_rate = season_stats.get("clv_beat_rate", 0)
+if s_total > 0:
+    col_a, col_b = st.sidebar.columns(2)
+    col_a.metric("Avg Edge", f"{avg_edge * 100:.1f}%" if avg_edge else "-")
+    col_b.metric("Avg CLV", f"{avg_clv * 100:+.1f}%" if avg_clv else "-")
+
+    if clv_rate:
+        st.sidebar.metric("Beat Closing Line", f"{clv_rate:.0f}%",
+                           delta="finding value" if clv_rate > 50 else "below 50%",
+                           delta_color="normal" if clv_rate > 50 else "inverse")
+
+# Streak
+streak = current_streak(season_stats.get("results_list", []))
+if streak != "-":
+    st.sidebar.metric("Streak", streak)
+
+st.sidebar.divider()
+
+# --- Today's Action ---
+today_bets = [p for p in today_preds if p.get("bet_recommended")]
+today_wins = sum(1 for p in today_bets if p.get("result") is True)
+today_losses = sum(1 for p in today_bets if p.get("result") is False)
+today_pending = sum(1 for p in today_bets if p.get("result") is None)
+today_games = len(today_preds)
+
+st.sidebar.markdown("### Today")
+col_t1, col_t2 = st.sidebar.columns(2)
+col_t1.metric("Games", today_games)
+col_t2.metric("Bets", len(today_bets))
+
+if today_bets:
     today_pl = 0.0
     for b in today_bets:
         if b.get("result") is not None and b.get("best_nrfi_price"):
             units = float(b["bet_size_units"]) if b.get("bet_size_units") else 1.0
             today_pl += calculate_profit(int(b["best_nrfi_price"]), units, b["result"])
-    pl_color = "normal" if today_pl >= 0 else "inverse"
-    st.sidebar.metric("Today's P/L", format_pl(today_pl),
-                       delta=f"{today_wins}W {today_losses}L", delta_color=pl_color)
+    parts = []
+    if today_wins:
+        parts.append(f"{today_wins}W")
+    if today_losses:
+        parts.append(f"{today_losses}L")
+    if today_pending:
+        parts.append(f"{today_pending} pending")
+    today_delta = " ".join(parts) if parts else None
+    st.sidebar.metric("Today P/L", format_pl(today_pl),
+                       delta=today_delta,
+                       delta_color="normal" if today_pl >= 0 else "inverse")
 
-    if season_stats.get("total_bets", 0) > 0:
-        st.sidebar.divider()
-        st.sidebar.markdown("### Season Totals")
-        st.sidebar.metric("Season Profit/Loss", format_pl(season_stats.get("total_pl", 0)),
-                           delta=f"{season_stats.get('roi', 0):.1f}% return", delta_color="normal")
-        clv_rate = season_stats.get("clv_beat_rate", 0)
-        st.sidebar.metric("Beat Market",
-                           f"{clv_rate:.0f}%" if clv_rate else "N/A",
-                           delta="beating closing line" if clv_rate and clv_rate > 50 else None,
-                           delta_color="normal" if clv_rate and clv_rate > 50 else "off")
-        st.sidebar.caption("Above 50% = finding value before odds move")
-        streak = current_streak(season_stats.get("results_list", []))
-        st.sidebar.metric("Current Streak", streak)
+st.sidebar.divider()
+
+# --- System Status ---
+if state == "backtest" and not has_games_today:
+    st.sidebar.markdown("### System")
+    st.sidebar.caption(f"Model v{model_version} | {predictions_count:,} predictions")
+    checks = {
+        "games": ("Games", status.get("games_count", 0) > 0 if not has_error else False),
+        "odds": ("Odds", odds_count > 0),
+        "weather": ("Weather", status.get("weather_count", 0) > 0 if not has_error else False),
+    }
+    for key, (label, ok) in checks.items():
+        count = status.get(f"{key}_count", 0) if not has_error else 0
+        st.sidebar.write(f"{'🟢' if ok else '🔴'} {label}: {count:,}")
+else:
+    st.sidebar.caption(f"Model v{model_version}")
 
 
 # =====================================================================
@@ -443,17 +472,11 @@ if page == "Today's Picks":
     display_date = today
 
     if not today_preds:
-        st.warning("No predictions for today. Showing the most recent day with data as a demo.")
-        demo_date = get_most_recent_prediction_date()
-        if demo_date:
-            display_preds = get_todays_predictions(demo_date)
-            if display_preds:
-                display_date = demo_date
-        if not display_preds:
-            st.error("Could not find any day with predictions to display.")
-    elif state == "backtest":
-        st.info(f"Showing historical predictions for today ({today}). "
-                "Live predictions will appear once the daily pipeline runs.")
+        st.info(f"No games scheduled yet for {today.strftime('%B %-d, %Y')}. "
+                "Games will appear once the daily schedule pipeline runs.")
+    elif not any(p.get("p_nrfi_calibrated") or p.get("p_nrfi_combined") for p in today_preds):
+        st.info(f"{len(today_preds)} game(s) on the schedule. "
+                "Predictions will appear once lineups are confirmed and the model runs.")
 
     if display_preds:
         # Build odds lookup
@@ -552,6 +575,8 @@ elif page == "Performance":
 
         # Charts
         render_cumulative_pl_chart(daily_pl)
+
+        render_daily_log(daily_pl)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -660,7 +685,7 @@ elif page == "Model Accuracy":
                 if k.startswith("test_") and k.endswith("_raw"):
                     _test_year = k.replace("test_", "").replace("_raw", "")
                     break
-            _test_year = _test_year or _years[-1] if _per_season else "2025"
+            _test_year = _test_year or (_years[-1] if _per_season else str(_today_et().year))
             st.markdown(f"### {_test_year} (Unseen Games)")
             st.caption(f"The model never trained on {_test_year} data, so this tests real predictive power")
             test_raw = backtest.get(f"test_{_test_year}_raw", {})
@@ -813,7 +838,8 @@ elif page == "Bet History":
     with fcol4:
         result_filter = st.selectbox("Outcome", ["All", "Wins", "Losses", "Pending"])
     with fcol5:
-        season = st.selectbox("Season", [None, 2026, 2025, 2024, 2023, 2022, 2021, 2020, 2019],
+        _season_list = [None] + list(range(_today_et().year, 2018, -1))
+        season = st.selectbox("Season", _season_list,
                                format_func=lambda x: "All" if x is None else str(x))
     with fcol6:
         tier_filter = st.selectbox("Confidence Tier",

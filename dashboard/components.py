@@ -1219,4 +1219,58 @@ def render_tier_performance(bets: list):
             yaxis_title="%", legend=dict(orientation="h", y=1.12),
         )
         _style_chart(fig)
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def render_daily_log(daily_pl: list):
+    """Day-by-day performance log with record, P/L, ROI, and cumulative P/L."""
+    if not daily_pl:
+        st.info("No daily results to display yet.")
+        return
+
+    import pandas as pd
+
+    # Only show days that have decided bets
+    days_with_results = [d for d in daily_pl if d["wins"] + d["losses"] > 0]
+    if not days_with_results:
+        st.info("No settled bets to display yet.")
+        return
+
+    # Sort most recent first for display
+    days_sorted = sorted(days_with_results, key=lambda x: x["date"], reverse=True)
+
+    # Compute cumulative P/L in chronological order, then map it
+    days_chrono = sorted(days_with_results, key=lambda x: x["date"])
+    cum_pl = 0.0
+    cum_map = {}
+    for d in days_chrono:
+        cum_pl += d["pl"]
+        cum_map[d["date"]] = cum_pl
+
+    rows = []
+    for d in days_sorted:
+        decided = d["wins"] + d["losses"]
+        win_pct = (d["wins"] / decided * 100) if decided > 0 else 0
+        wagered = d.get("wagered", 0)
+        roi = (d["pl"] / wagered * 100) if wagered > 0 else 0
+        c_pl = cum_map[d["date"]]
+
+        # Result icons
+        result_dots = ("🟢" * d["wins"]) + ("🔴" * d["losses"])
+
+        rows.append({
+            "Date": d["date"],
+            "Bets": decided,
+            "Record": f"{d['wins']}W-{d['losses']}L",
+            "Results": result_dots,
+            "Win %": f"{win_pct:.0f}%",
+            "P/L": format_pl(d["pl"]),
+            "ROI": f"{roi:+.1f}%",
+            "Cum. P/L": format_pl(c_pl),
+        })
+
+    df = pd.DataFrame(rows)
+
+    st.markdown("### Daily Log")
+    st.caption(f"{len(days_sorted)} days with settled bets")
+    st.dataframe(df, use_container_width=True, hide_index=True, height=500)

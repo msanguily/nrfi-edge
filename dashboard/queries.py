@@ -46,17 +46,45 @@ def _batched_in(sb, table, select_cols, column, values, extra_filters=None, page
 
 
 def get_most_recent_prediction_date() -> date:
-    """Get the most recent date that has predictions. Returns None if no predictions exist."""
+    """Get the most recent game_date that has predictions.
+
+    Looks at the actual game date (not created_at) to find the latest day
+    with predictions, so re-evaluations of old games don't skew the result.
+    """
     try:
         sb = get_supabase()
-        res = sb.table("predictions").select("game_pk").order("created_at", desc=True).limit(1).execute()
+        # Join predictions to games and find the max game_date
+        res = (
+            sb.table("games")
+            .select("game_date")
+            .order("game_date", desc=True)
+            .limit(50)
+            .execute()
+        )
         if not res.data:
             return None
-        game_pk = res.data[0]["game_pk"]
-        game_res = sb.table("games").select("game_date").eq("game_pk", game_pk).limit(1).execute()
-        if not game_res.data:
-            return None
-        return date.fromisoformat(game_res.data[0]["game_date"])
+        # Check each date for predictions (most recent first)
+        for row in res.data:
+            gd = row["game_date"]
+            games_on_date = (
+                sb.table("games")
+                .select("game_pk")
+                .eq("game_date", gd)
+                .execute()
+            )
+            if not games_on_date.data:
+                continue
+            pks = [g["game_pk"] for g in games_on_date.data]
+            pred_check = (
+                sb.table("predictions")
+                .select("game_pk")
+                .in_("game_pk", pks[:20])
+                .limit(1)
+                .execute()
+            )
+            if pred_check.data:
+                return date.fromisoformat(gd)
+        return None
     except Exception:
         return None
 
@@ -118,10 +146,11 @@ def get_todays_predictions(target_date: date) -> list:
         game_pks = [g["game_pk"] for g in games_res.data]
         games_by_pk = {g["game_pk"]: g for g in games_res.data}
 
-        # Get predictions for those games
+        # Get predictions for those games (may be empty if pipeline hasn't run yet)
         preds_data = _batched_in(sb, "predictions", "*", "game_pk", game_pks)
-        if not preds_data:
-            return []
+        preds_by_pk = {}
+        for pred in preds_data:
+            preds_by_pk[pred["game_pk"]] = pred
 
         # Get team names, player names, parks
         team_ids = set()
@@ -156,10 +185,11 @@ def get_todays_predictions(target_date: date) -> list:
             res = sb.table("parks").select("*").in_("park_id", list(park_ids)).execute()
             parks = {p["park_id"]: p for p in (res.data or [])}
 
-        # Combine
+        # Combine — iterate over games so we always show the full slate,
+        # even before the prediction pipeline has run.
         results = []
-        for pred in preds_data:
-            game = games_by_pk.get(pred["game_pk"], {})
+        for game in games_res.data:
+            pred = preds_by_pk.get(game["game_pk"], {})
             away_team = teams.get(game.get("away_team_id"), {})
             home_team = teams.get(game.get("home_team_id"), {})
             away_pitcher = players.get(game.get("away_pitcher_id"), {})
@@ -168,6 +198,7 @@ def get_todays_predictions(target_date: date) -> list:
 
             results.append({
                 **pred,
+                "game_pk": game["game_pk"],
                 "game_date": game.get("game_date"),
                 "game_time_utc": game.get("game_time_utc"),
                 "status": game.get("status"),
@@ -532,7 +563,7 @@ def get_daily_pl(start_date: date = None, end_date: date = None) -> list:
 
             if gdate not in daily:
                 daily[gdate] = {"date": gdate, "pl": 0.0, "bets": 0, "wins": 0,
-                                "losses": 0, "expected_pl": 0.0}
+                                "losses": 0, "expected_pl": 0.0, "wagered": 0.0}
             daily[gdate]["bets"] += 1
 
             # Accumulate expected P/L from edge * units
@@ -544,6 +575,7 @@ def get_daily_pl(start_date: date = None, end_date: date = None) -> list:
                 odds = int(row["best_nrfi_price"]) if row.get("best_nrfi_price") else -110
                 pl = calculate_profit(odds, units, row["result"])
                 daily[gdate]["pl"] += pl
+                daily[gdate]["wagered"] += units
                 if row["result"]:
                     daily[gdate]["wins"] += 1
                 else:

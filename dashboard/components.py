@@ -340,10 +340,12 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
         row = {
             "Time": time_str,
             "Matchup": matchup,
-            "Away Pitcher": away_p,
-            "Home Pitcher": home_p,
+            "Status": status,
+            "Result": result,
             "NRFI Chance": format_prob(display_prob),
             "Tier": TIER_LABELS.get(tier, "\u2014") if has_odds else None,
+            "Away Pitcher": away_p,
+            "Home Pitcher": home_p,
             "Away Scoreless": format_prob(p_top),
             "Home Scoreless": format_prob(p_bot),
         }
@@ -373,15 +375,9 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
 
             row.update({
                 "Best Odds": best_line,
-                "Game Total": f"{float(game_total):.1f}" if game_total else "-",
-                "Sharpest Book": pinnacle_line,
-                "Book's %": format_prob(implied_prob),
                 "Advantage": format_edge(edge),
                 "Bet Size": f"{kelly:.2f}u" if kelly and edge and edge >= 0.03 else "-",
             })
-
-        row["Status"] = status
-        row["Result"] = result
         rows.append(row)
 
     import pandas as pd
@@ -389,7 +385,7 @@ def render_games_table(predictions: list, odds_by_game: dict = None,
     if "Tier" in df.columns and df["Tier"].isna().all():
         df = df.drop(columns=["Tier"])
     # Drop less useful columns to fit screen width
-    for col in ["Game Total", "Sharpest Book", "Book's %"]:
+    for col in ["Away Scoreless", "Home Scoreless"]:
         if col in df.columns:
             df = df.drop(columns=[col])
     st.dataframe(df, use_container_width=True, hide_index=True)

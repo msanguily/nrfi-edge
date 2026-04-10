@@ -229,28 +229,64 @@ def run():
             logger.error("Error processing game %d:\n%s", game_pk, traceback.format_exc())
             errors += 1
 
-    # Grade first-inning results for today's games that have started
+    # Grade first-inning results for today's games.
+    # NRFI results are known after the 1st inning, so we grade as soon as
+    # the linescore is available — no need to wait for the full game to end.
+    # Games the API reports as "Final" also get their status updated.
     games_graded = 0
+    from src.data.mlb_api import get_games_for_date
+    live_schedule = get_games_for_date(today_str)
+    final_pks = set()
+    in_progress_pks = set()
+    if live_schedule:
+        for g in live_schedule:
+            api_status = g.get("status", "").lower()
+            if api_status == "final":
+                final_pks.add(g.get("game_pk"))
+            elif api_status in ("in progress", "live"):
+                in_progress_pks.add(g.get("game_pk"))
+
     ungraded = (
         db.table("games")
-        .select("game_pk, status")
+        .select("game_pk, status, nrfi_result")
         .eq("game_date", today_str)
-        .neq("status", "final")
         .neq("status", "postponed")
         .neq("status", "cancelled")
         .execute()
     )
     for game in (ungraded.data or []):
+        gpk = game["game_pk"]
+        is_final = gpk in final_pks
+        is_live = gpk in in_progress_pks
+        already_graded_nrfi = game.get("nrfi_result") is not None
+
+        # Skip if NRFI already recorded and game already marked final
+        if already_graded_nrfi and game.get("status") == "final":
+            continue
+        # For final games: grade and mark final
+        # For in-progress games: grade NRFI only (don't mark final)
+        if not is_final and not is_live:
+            continue
         try:
-            result = grade_game(db, game["game_pk"])
+            if already_graded_nrfi and is_final and game.get("status") != "final":
+                # NRFI already graded (from in-progress), just update status
+                db.table("games").update({"status": "final"}).eq("game_pk", gpk).execute()
+                games_graded += 1
+                logger.info("Game %d marked final (NRFI already graded)", gpk)
+                continue
+            result = grade_game(db, gpk, mark_final=is_final)
             if result is not None:
                 nrfi, away_runs, home_runs = result
-                graded = grade_predictions(db, game["game_pk"], nrfi)
+                if not already_graded_nrfi:
+                    graded = grade_predictions(db, gpk, nrfi)
+                else:
+                    graded = 0
                 games_graded += 1
-                logger.info("Graded game %d: NRFI=%s (%d-%d), %d predictions updated",
-                            game["game_pk"], nrfi, away_runs, home_runs, graded)
+                label = "Final" if is_final else "1st inn done"
+                logger.info("Graded game %d (%s): NRFI=%s (%d-%d), %d predictions updated",
+                            gpk, label, nrfi, away_runs, home_runs, graded)
         except Exception:
-            logger.debug("Could not grade game %d yet", game["game_pk"])
+            logger.debug("Could not grade game %d yet", gpk)
 
     logger.info(
         "Summary: checked %d games, %d new lineups, %d predictions made, "

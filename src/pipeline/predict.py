@@ -163,10 +163,7 @@ def get_best_split_rates(
     db,
     overall_rates: Optional[dict] = None,
 ) -> Optional[dict]:
-    if player_id is None:
-        return None
-    """
-    Fetch platoon split rates for a player, shrunk toward overall rates.
+    """Fetch platoon split rates for a player, shrunk toward overall rates.
 
     Returns None if not found or PA < 30.
     If overall_rates is provided, split rates are regressed toward them
@@ -175,6 +172,8 @@ def get_best_split_rates(
     player_type: 'batter' or 'pitcher'
     opponent_hand: 'R' or 'L'
     """
+    if player_id is None:
+        return None
     if player_type == 'batter':
         split = f'vs_{"RHP" if opponent_hand == "R" else "LHP"}'
     else:
@@ -243,18 +242,19 @@ def _build_half_inning_rates(
         pitcher_id, season, 'pitcher_stats', db, league_rates,
     )
     if pitcher_rates is None:
-        logger.warning('Pitcher %d has no stats — using league averages', pitcher_id)
+        logger.warning('Pitcher %s has no stats — using league averages', pitcher_id)
         pitcher_rates = dict(league_rates)
 
     # Fetch pitcher's GB rate for GIDP computation
     pitcher_gb_rate = None
-    pitcher_stats_resp = (
-        db.table('pitcher_stats').select('gb_rate')
-        .eq('mlb_player_id', pitcher_id).eq('season', season)
-        .execute()
-    )
-    if pitcher_stats_resp.data and pitcher_stats_resp.data[0].get('gb_rate'):
-        pitcher_gb_rate = float(pitcher_stats_resp.data[0]['gb_rate'])
+    if pitcher_id is not None:
+        pitcher_stats_resp = (
+            db.table('pitcher_stats').select('gb_rate')
+            .eq('mlb_player_id', pitcher_id).eq('season', season)
+            .execute()
+        )
+        if pitcher_stats_resp.data and pitcher_stats_resp.data[0].get('gb_rate'):
+            pitcher_gb_rate = float(pitcher_stats_resp.data[0]['gb_rate'])
 
     # Select half-specific first-inning adjustment
     fi_adjust = adjust_for_first_inning_top if half == 'top' else adjust_for_first_inning_bottom

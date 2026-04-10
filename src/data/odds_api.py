@@ -198,16 +198,9 @@ def fetch_nrfi_odds(game_date: str = None, include_completed: bool = False) -> L
     return results
 
 
-def match_to_game_pk(
-    home_team_name: str, away_team_name: str, game_date: str, supabase_client
-) -> Optional[int]:
-    """Match an SGO event to our games table game_pk.
-
-    Uses home team name to find mlb_team_id, then looks up the game by date.
-    Caches team name -> mlb_team_id mappings to avoid repeated lookups.
-    """
-    db_name = _TEAM_NAME_MAP.get(home_team_name, home_team_name)
-
+def _resolve_team_id(team_name: str, supabase_client) -> Optional[int]:
+    """Resolve a team long name to mlb_team_id, with caching."""
+    db_name = _TEAM_NAME_MAP.get(team_name, team_name)
     if db_name not in _team_name_cache:
         result = (
             supabase_client.table("teams")
@@ -219,23 +212,48 @@ def match_to_game_pk(
             _team_name_cache[db_name] = result.data[0]["mlb_team_id"]
         else:
             logger.warning(
-                "Team not found in DB: %s (SGO name: %s)", db_name, home_team_name
+                "Team not found in DB: %s (SGO name: %s)", db_name, team_name
             )
             return None
+    return _team_name_cache[db_name]
 
-    home_team_id = _team_name_cache[db_name]
 
-    result = (
+def match_to_game_pk(
+    home_team_name: str, away_team_name: str, game_date: str, supabase_client
+) -> Optional[int]:
+    """Match an SGO event to our games table game_pk.
+
+    Uses both home and away team IDs to handle doubleheaders correctly
+    (two games at the same park on the same day with different opponents
+    or the same opponent).
+    """
+    home_team_id = _resolve_team_id(home_team_name, supabase_client)
+    if home_team_id is None:
+        return None
+
+    query = (
         supabase_client.table("games")
         .select("game_pk")
         .eq("game_date", game_date)
         .eq("home_team_id", home_team_id)
-        .execute()
     )
+
+    # Also filter by away team to distinguish doubleheader games
+    away_team_id = _resolve_team_id(away_team_name, supabase_client)
+    if away_team_id is not None:
+        query = query.eq("away_team_id", away_team_id)
+
+    result = query.execute()
+
     if result.data:
+        if len(result.data) > 1:
+            logger.warning(
+                "Multiple games found for %s @ %s on %s — using first (game_pk=%d)",
+                away_team_name, home_team_name, game_date, result.data[0]["game_pk"],
+            )
         return result.data[0]["game_pk"]
 
-    logger.warning("No game found for %s at home on %s", home_team_name, game_date)
+    logger.warning("No game found for %s @ %s on %s", away_team_name, home_team_name, game_date)
     return None
 
 
@@ -275,9 +293,41 @@ def store_odds(odds_list: List[Dict], supabase_client) -> int:
             )
             continue
 
+        # Skip games that have already started to prevent in-play odds
+        # from contaminating closing prices in the odds table
+        starts_at_str = game.get("starts_at")
+        if starts_at_str:
+            try:
+                starts_at = datetime.fromisoformat(
+                    starts_at_str.replace("Z", "+00:00")
+                )
+                if datetime.now(timezone.utc) > starts_at:
+                    logger.debug(
+                        "Skipping odds update for started game %d", game_pk
+                    )
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         all_books = set(game.get("nrfi_odds", {}).keys()) | set(
             game.get("yrfi_odds", {}).keys()
         )
+
+        # Batch-fetch existing opening prices for this game (1 query per game,
+        # not 1 per book). Reduces ~224 queries/refresh to ~16.
+        existing_resp = (
+            supabase_client.table("odds")
+            .select("book, opening_nrfi_price")
+            .eq("game_pk", game_pk)
+            .execute()
+        )
+        books_with_opening = {
+            r["book"]
+            for r in (existing_resp.data or [])
+            if r.get("opening_nrfi_price") is not None
+        }
+
+        now_utc = datetime.now(timezone.utc).isoformat()
 
         for book in all_books:
             nrfi_price = game["nrfi_odds"].get(book)
@@ -294,36 +344,20 @@ def store_odds(odds_list: List[Dict], supabase_client) -> int:
             )
 
             # --- 1. Always INSERT into odds_history (time-series) ---
-            history_row = {
-                "game_pk": game_pk,
-                "book": book,
-                "nrfi_price": nrfi_price,
-                "yrfi_price": yrfi_price,
-                "nrfi_decimal": nrfi_dec,
-                "yrfi_decimal": yrfi_dec,
-                "implied_nrfi_prob": implied,
-            }
             try:
-                supabase_client.table("odds_history").insert(
-                    history_row
-                ).execute()
+                supabase_client.table("odds_history").insert({
+                    "game_pk": game_pk,
+                    "book": book,
+                    "nrfi_price": nrfi_price,
+                    "yrfi_price": yrfi_price,
+                    "nrfi_decimal": nrfi_dec,
+                    "yrfi_decimal": yrfi_dec,
+                    "implied_nrfi_prob": implied,
+                }).execute()
             except Exception:
                 pass  # history table may not exist yet (pre-migration)
 
-            # --- 2. Check if opening price exists for this game/book ---
-            existing = (
-                supabase_client.table("odds")
-                .select("opening_nrfi_price")
-                .eq("game_pk", game_pk)
-                .eq("book", book)
-                .execute()
-            )
-            has_opening = (
-                existing.data
-                and existing.data[0].get("opening_nrfi_price") is not None
-            )
-
-            # --- 3. Upsert latest snapshot into odds table ---
+            # --- 2. Upsert latest snapshot into odds table ---
             row = {
                 "game_pk": game_pk,
                 "book": book,
@@ -332,14 +366,14 @@ def store_odds(odds_list: List[Dict], supabase_client) -> int:
                 "nrfi_decimal": nrfi_dec,
                 "yrfi_decimal": yrfi_dec,
                 "implied_nrfi_prob": implied,
-                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "captured_at": now_utc,
                 # Always update closing to the latest — the last refresh
                 # before game start becomes the actual closing price.
                 "closing_nrfi_price": nrfi_price,
                 "closing_implied_prob": implied,
             }
             # Set opening price only on first capture
-            if not has_opening:
+            if book not in books_with_opening:
                 row["opening_nrfi_price"] = nrfi_price
 
             supabase_client.table("odds").upsert(

@@ -334,8 +334,8 @@ class TestPredictNRFI:
         result = predict_nrfi(745123, db)
         assert result is None
 
-    def test_no_lineups_returns_none(self):
-        """If lineups table is empty for this game, return None."""
+    def test_no_lineups_uses_league_average(self):
+        """If lineups table is empty, predict with league-average batters."""
         db = _build_mock_db()
         # Override lineups to be empty
         orig_table = db.table
@@ -363,7 +363,9 @@ class TestPredictNRFI:
 
         db.table = patched_table
         result = predict_nrfi(745123, db)
-        assert result is None
+        # Should still produce a prediction using league-average batters
+        assert result is not None
+        assert 0.3 < result['p_nrfi_calibrated'] < 0.7
 
     def test_with_odds_computes_edge(self):
         odds_data = [

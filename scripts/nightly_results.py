@@ -44,10 +44,12 @@ def get_ungraded_games(db, yesterday_str):
     return [g for g in all_games if g.get("status") != "final"]
 
 
-def grade_game(db, game_pk):
+def grade_game(db, game_pk, mark_final=True):
     """Fetch first-inning results and update the games table.
 
     Returns (nrfi_result, away_runs, home_runs) or None if game not complete.
+    If mark_final is False, only updates first-inning results without changing
+    the game status (used for in-progress games where first inning is done).
     """
     linescore = get_game_linescore(game_pk)
     if linescore is None:
@@ -57,12 +59,15 @@ def grade_game(db, game_pk):
     home_runs = linescore["home_first_inning_runs"]
     nrfi = linescore["nrfi"]
 
-    db.table("games").update({
+    update = {
         "first_inn_away_runs": away_runs,
         "first_inn_home_runs": home_runs,
         "nrfi_result": nrfi,
-        "status": "final",
-    }).eq("game_pk", game_pk).execute()
+    }
+    if mark_final:
+        update["status"] = "final"
+
+    db.table("games").update(update).eq("game_pk", game_pk).execute()
 
     return nrfi, away_runs, home_runs
 
@@ -86,6 +91,34 @@ def grade_predictions(db, game_pk, nrfi_result):
         count += 1
 
     return count
+
+
+def get_games_needing_clv(db, yesterday_str):
+    """Find yesterday's final games with recommended bets that have no CLV computed.
+
+    This catches games graded by lineup_monitor (which doesn't compute CLV),
+    ensuring CLV is always computed regardless of which script graded the game.
+    """
+    resp = (
+        db.table("predictions")
+        .select("game_pk")
+        .eq("bet_recommended", True)
+        .is_("clv", "null")
+        .execute()
+    )
+    if not resp.data:
+        return []
+
+    candidate_pks = list(set(p["game_pk"] for p in resp.data))
+    games_resp = (
+        db.table("games")
+        .select("game_pk")
+        .eq("game_date", yesterday_str)
+        .eq("status", "final")
+        .in_("game_pk", candidate_pks)
+        .execute()
+    )
+    return [g["game_pk"] for g in (games_resp.data or [])]
 
 
 def compute_clv(db, graded_pks):
@@ -230,53 +263,63 @@ def run():
 
     db = get_supabase_client()
 
-    # Step 1: Get games to grade
+    # Step 1: Grade unfinished games
     ungraded = get_ungraded_games(db, yesterday_str)
-    if not ungraded:
-        logger.info("No games to grade")
-        return 0
-
-    logger.info("Found %d games to grade", len(ungraded))
-
-    # Step 2: Grade each game
     graded_pks = []
     predictions_graded = 0
     errors = 0
 
-    for game in ungraded:
-        game_pk = game["game_pk"]
-        try:
-            result = grade_game(db, game_pk)
-            if result is None:
-                logger.warning("Game %d: first inning data not available", game_pk)
-                continue
+    if ungraded:
+        logger.info("Found %d games to grade", len(ungraded))
+        for game in ungraded:
+            game_pk = game["game_pk"]
+            try:
+                result = grade_game(db, game_pk)
+                if result is None:
+                    logger.warning("Game %d: first inning data not available", game_pk)
+                    continue
 
-            nrfi, away_runs, home_runs = result
-            graded_pks.append(game_pk)
+                nrfi, away_runs, home_runs = result
+                graded_pks.append(game_pk)
 
-            # Step 3: Grade predictions
-            count = grade_predictions(db, game_pk, nrfi)
-            predictions_graded += count
+                count = grade_predictions(db, game_pk, nrfi)
+                predictions_graded += count
 
-            result_str = "NRFI" if nrfi else f"YRFI ({away_runs}-{home_runs})"
-            logger.info("Game %d: %s (%d predictions graded)", game_pk, result_str, count)
+                result_str = "NRFI" if nrfi else f"YRFI ({away_runs}-{home_runs})"
+                logger.info("Game %d: %s (%d predictions graded)", game_pk, result_str, count)
 
-        except Exception:
-            logger.error("Error grading game %d:\n%s", game_pk, traceback.format_exc())
-            errors += 1
+            except Exception:
+                logger.error("Error grading game %d:\n%s", game_pk, traceback.format_exc())
+                errors += 1
+    else:
+        logger.info("No games to grade (already graded by lineup monitor)")
 
-    # Step 4: Compute CLV from stored closing odds
+    # Step 2: Compute CLV for yesterday's bets that are missing it.
+    # Runs independently of grading — picks up games already graded by lineup_monitor.
+    clv_pks = get_games_needing_clv(db, yesterday_str)
     clv_updated = 0
-    try:
-        clv_updated = compute_clv(db, graded_pks)
-        if clv_updated:
-            logger.info("Updated CLV for %d bets", clv_updated)
-    except Exception:
-        logger.warning("CLV computation failed:\n%s", traceback.format_exc())
+    if clv_pks:
+        try:
+            clv_updated = compute_clv(db, clv_pks)
+            if clv_updated:
+                logger.info("Updated CLV for %d bets across %d games", clv_updated, len(clv_pks))
+        except Exception:
+            logger.warning("CLV computation failed:\n%s", traceback.format_exc())
+    else:
+        logger.info("No bets need CLV computation")
 
-    # Step 5: Daily summary
-    summary = calculate_daily_pl(db, graded_pks)
-    logger.info("Games graded: %d", len(graded_pks))
+    # Step 3: Daily summary for all yesterday's final games
+    all_pks_resp = (
+        db.table("games")
+        .select("game_pk")
+        .eq("game_date", yesterday_str)
+        .eq("status", "final")
+        .execute()
+    )
+    all_yesterday_pks = [g["game_pk"] for g in (all_pks_resp.data or [])]
+    summary = calculate_daily_pl(db, all_yesterday_pks)
+
+    logger.info("Games graded this run: %d, total yesterday: %d", len(graded_pks), len(all_yesterday_pks))
     if summary["bets"] > 0:
         logger.info(
             "Bets: %dW-%dL, P/L: %+.2f units, Avg CLV: %s",
@@ -294,7 +337,7 @@ def run():
             logger.info("Worst loss: game %d (edge %.1f%%, -%.2f units)",
                         wl["game_pk"], wl["edge"] * 100, wl["loss"])
     else:
-        logger.info("No recommended bets to grade")
+        logger.info("No recommended bets yesterday")
 
     logger.info("Predictions graded: %d, CLV updated: %d", predictions_graded, clv_updated)
 
